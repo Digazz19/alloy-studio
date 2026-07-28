@@ -1,0 +1,84 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Alloy",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#temporal-keywords" },
+    { "include": "#operators" },
+    { "include": "#constants" },
+    { "include": "#types" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.alloy",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.alloy",
+          "begin": "/\\*",
+          "end": "\\*/"
+        },
+        {
+          "name": "comment.line.double-dash.alloy",
+          "match": "--.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.alloy",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.alloy",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.alloy",
+          "match": "\\b(module|open|sig|extends|abstract|enum|fact|pred|fun|assert|check|run|for|but|exactly|expect|let|in|and|or|not|implies|iff|else|no|some|lone|one|set|seq|all|disj|with|steps|univ|none|iden|Int|String|this)\\b"
+        }
+      ]
+    },
+    "temporal-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.temporal.alloy",
+          "match": "\\b(always|eventually|after|before|until|releases|since|triggered|historically|once|enabled|modifies|var|steps)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.alloy",
+          "match": "(\\+|-|\\*|\\^|~|&|\\.|->|<:|:>|=|!=|<|>|<=|>=|=>|<=>|!|#|')"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.numeric.alloy",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.alloy",
+          "match": "\\b(one|lone|some|set|seq)\\b"
+        }
+      ]
+    }
+  },
+  "scopeName": "source.alloy"
+}

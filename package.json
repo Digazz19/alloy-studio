@@ -1,0 +1,264 @@
+{
+  "name": "digazalloy-vscode",
+  "displayName": "Digaz Alloy VSCode",
+  "description": "Run Alloy models inside VS Code",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onLanguage:alloy"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "alloy",
+        "extensions": [".als"],
+        "aliases": ["Alloy"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "alloy",
+        "scopeName": "source.alloy",
+        "path": "./syntax/alloy.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Alloy",
+      "properties": {
+        "alloy.jarPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the alloy.jar (used by the LSP)"
+        },
+        "alloy.serverJarPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the alloy-server JAR (used for execution and navigation)"
+        },
+        "alloy.solver": {
+          "type": "string",
+          "default": "sat4j",
+          "description": "Default SAT solver"
+        },
+        "alloy.symmetry": {
+          "type": "number",
+          "default": 20,
+          "description": "Default symmetry breaking"
+        },
+        "alloy.skolemDepth": {
+          "type": "number",
+          "default": 0,
+          "description": "Default Skolem depth"
+        },
+        "alloy.noOverflow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Default no overflow"
+        },
+        "alloy.unrolls": {
+          "type": "number",
+          "default": -1,
+          "description": "Default unrolls"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "alloy.executeCommand",
+        "title": "Run Alloy",
+        "icon": "$(play)"
+      },
+      {
+        "command": "alloy.runAll",
+        "title": "Run All Alloy Commands",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "alloy.debug.previous",
+        "title": "Previous",
+        "icon": "$(debug-step-back)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.debug.next",
+        "title": "Next",
+        "icon": "$(debug-step-over)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.debug.newFork",
+        "title": "New Fork",
+        "icon": "$(debug-continue)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.debug.newTrace",
+        "title": "New Trace",
+        "icon": "$(debug-restart)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.debug.newInit",
+        "title": "New Init",
+        "icon": "$(debug-step-into)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.debug.newConfig",
+        "title": "New Config",
+        "icon": "$(settings)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.debug.stop",
+        "title": "Stop",
+        "icon": "$(debug-stop)",
+        "category": "Alloy"
+      },
+      {
+        "command": "alloy.configure",
+        "title": "Alloy: Configure Analysis Options"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "alloy.executeCommand",
+          "when": "resourceExtname == .als && !alloyDebugActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "alloy.runAll",
+          "when": "resourceExtname == .als && !alloyDebugActive",
+          "group": "navigation@2"
+        },
+        {
+          "command": "alloy.debug.previous",
+          "when": "alloyDebugActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "alloy.debug.next",
+          "when": "alloyDebugActive",
+          "group": "navigation@2"
+        },
+        {
+          "command": "alloy.debug.newFork",
+          "when": "alloyDebugActive",
+          "group": "navigation@3"
+        },
+        {
+          "command": "alloy.debug.newTrace",
+          "when": "alloyDebugActive",
+          "group": "navigation@4"
+        },
+        {
+          "command": "alloy.debug.newInit",
+          "when": "alloyDebugActive",
+          "group": "navigation@5"
+        },
+        {
+          "command": "alloy.debug.newConfig",
+          "when": "alloyDebugActive",
+          "group": "navigation@6"
+        },
+        {
+          "command": "alloy.debug.stop",
+          "when": "alloyDebugActive",
+          "group": "navigation@7"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "alloy",
+        "label": "Alloy Debug",
+        "languages": ["alloy"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["file", "commandIndex", "commandLabel"],
+            "properties": {
+              "file": {
+                "type": "string",
+                "description": "Path to the .als file"
+              },
+              "commandIndex": {
+                "type": "number",
+                "description": "Index of the run/check command"
+              },
+              "commandLabel": {
+                "type": "string",
+                "description": "Label of the command"
+              },
+              "solver": {
+                "type": "string",
+                "description": "SAT solver to use",
+                "default": "sat4j"
+              },
+              "symmetry": {
+                "type": "number",
+                "description": "Symmetry breaking (default: 20)",
+                "default": 20
+              },
+              "skolemDepth": {
+                "type": "number",
+                "description": "Skolem depth (default: 0)",
+                "default": 0
+              },
+              "noOverflow": {
+                "type": "boolean",
+                "description": "Disable arithmetic overflow (default: false)",
+                "default": false
+              },
+              "unrolls": {
+                "type": "number",
+                "description": "Number of recursive unrolls (default: -1)",
+                "default": -1
+              },
+              "decomposeMode": {
+                "type": "number",
+                "description": "Decomposition mode (default: 0)",
+                "default": 0
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "alloy",
+            "request": "launch",
+            "name": "Debug Alloy",
+            "file": "${file}",
+            "commandIndex": 0,
+            "commandLabel": "run",
+            "solver": "${input:solver}",
+            "symmetry": 20,
+            "skolemDepth": 0,
+            "noOverflow": false,
+            "unrolls": -1,
+            "decomposeMode": 0
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node_modules/.bin/tsc -p ./",
+    "watch": "node_modules/.bin/tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "^1.68.0",
+    "@vscode/debugprotocol": "^1.68.0",
+    "vscode-languageclient": "^9.0.1"
+  }
+}
