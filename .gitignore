@@ -6,3 +6,4 @@ node_modules
 alloy.jar
 .vscode/settings.json
 alloy-server/target/
+models/
