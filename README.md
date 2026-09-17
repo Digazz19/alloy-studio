@@ -135,6 +135,35 @@ Create `~/alloy-models/.vscode/settings.json` with the following content, replac
 
 > A template is available at `.vscode/settings.example.json` in the extension folder.
 
+### 5.1 Create a launch.json file
+
+A `launch.json` file is required for the Run and Debug panel to work. In the Extension Development Host window, after opening your models folder:
+
+1. Go to the **Run and Debug** panel (`Ctrl+Shift+D`)
+2. Click **"create a launch.json file"**
+3. Select **"Alloy Debug"** from the list of debuggers
+4. A `launch.json` file is created automatically in your models folder with the correct configuration
+
+Alternatively, create `.vscode/launch.json` manually in your models folder with the following content:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "alloy",
+      "request": "launch",
+      "name": "Debug Alloy",
+      "file": "${file}",
+      "commandIndex": 0,
+      "commandLabel": "run"
+    }
+  ]
+}
+```
+
+> **Note:** After creating the `launch.json`, the Run and Debug panel will show the **"Debug Alloy"** configuration and the **F5** key will open the command Quick Pick to select which `run` or `check` command to execute.
+
 ### 6. Launch the extension
 
 1. Open the `alloy-studio` folder in VS Code
