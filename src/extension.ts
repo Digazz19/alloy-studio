@@ -978,8 +978,26 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
     const sat = r.response.satisfiable;
     const error = r.response.error;
     const isCheck = r.label.trim().startsWith('check');
-    const icon = error ? '⚠️' : (isCheck ? (!sat ? '✅' : '❌') : (sat ? '✅' : '❌'));
-    const status = error ? 'Error' : (isCheck ? (!sat ? 'UNSAT' : 'SAT') : (sat ? 'SAT' : 'UNSAT'));
+
+    // Extrair o expect do label
+    const expectMatch = r.label.match(/expect\s+(\d+)/);
+    const expectValue = expectMatch ? parseInt(expectMatch[1]) : null;
+    const expectSat = expectValue !== null ? expectValue > 0 : null;
+
+    // Determinar se passou ou falhou com base no expect
+    let passed: boolean;
+    if (error) {
+      passed = false;
+    } else if (isCheck) {
+      const shouldBeSat = expectSat === true;
+      passed = shouldBeSat ? sat : !sat;
+    } else {
+      const shouldBeSat = expectSat !== false; // default é SAT
+      passed = shouldBeSat ? sat : !sat;
+    }
+
+    const icon = error ? '⚠️' : (passed ? '✅' : '❌');
+    const status = error ? 'Error' : (sat ? 'SAT' : 'UNSAT');
 
     // Extrair primeiro resultado da instância
     let firstResult = '';
@@ -989,7 +1007,14 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
         const stateBlocks = instanceText.split(/------State \d+.*?-------/);
         const firstState = stateBlocks[1] || stateBlocks[0] || '';
         const relevantLines = firstState.split('\n')
-          .filter((line: string) => line.includes('this/') && !line.includes('univ') && !line.includes('Int=') && !line.includes('seq/') && !line.includes('String=') && !line.includes('none='))
+          .filter((line: string) =>
+            line.includes('this/') &&
+            !line.includes('univ') &&
+            !line.includes('Int=') &&
+            !line.includes('seq/') &&
+            !line.includes('String=') &&
+            !line.includes('none=')
+          )
           .map((line: string) => line.trim())
           .join(', ');
         firstResult = relevantLines || '{}';
@@ -1007,7 +1032,7 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
       <tr>
         <td>${icon}</td>
         <td>${escapeHtml(r.label)}</td>
-        <td class="status ${status.toLowerCase()}">${status}</td>
+        <td class="status ${passed ? 'sat' : 'unsat'}">${status}</td>
         <td class="first-result">${escapeHtml(firstResult)}</td>
       </tr>
     `;
