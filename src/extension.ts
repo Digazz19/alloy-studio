@@ -159,9 +159,14 @@ export function activate(context: vscode.ExtensionContext) {
               stateIndex: message.stateIndex
             });
           } else {
+            // Use alloyState.getInstance() to avoid stale closure over the
+            // original `instance` parameter (which is captured once when the
+            // panel is first created and never updated by subsequent
+            // instanceChanged events).
+            const currentInstance = alloyState.getInstance() ?? instance;
             alloyPanel!.webview.html = getResultsHtml(
-              instance,
-              instance.commandLabel,
+              currentInstance,
+              currentInstance.commandLabel,
               message.stateIndex
             );
           }
@@ -773,11 +778,31 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
       outline: 1px solid var(--vscode-focusBorder);
     }
     #graph { width: 100vw; }
-    .node circle { stroke: #fff; stroke-width: 1.5px; cursor: grab; }
-    .node text { font-size: 11px; fill: var(--vscode-foreground);
-                 pointer-events: none; text-anchor: middle; dominant-baseline: central; }
-    .link { stroke: #999; stroke-opacity: 0.6; stroke-width: 1.5px; marker-end: url(#arrow); }
-    .link-label { font-size: 10px; fill: #aaa; pointer-events: none; }
+    .node ellipse {
+      stroke: #333;
+      stroke-width: 2px;
+      cursor: grab;
+    }
+    .node text {
+      font-size: 13px;
+      font-weight: bold;
+      fill: #111;
+      pointer-events: none;
+      text-anchor: middle;
+      dominant-baseline: central;
+    }
+    .link {
+      stroke: #555;
+      stroke-opacity: 0.8;
+      stroke-width: 1.5px;
+      fill: none;
+    }
+    .link-label {
+      font-size: 12px;
+      fill: #333;
+      font-style: italic;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -851,15 +876,29 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
     const svg = d3.select('#graph');
     const width = window.innerWidth;
     const height = graphHeight;
-    svg.attr('width', width).attr('height', height);
+    svg.attr('width', width).attr('height', height)
+       .style('background', '#f8f8f8');
 
-    svg.append('defs').append('marker')
+    // Node dimensions (ellipse)
+    const RX = 38, RY = 22;
+
+    const defs = svg.append('defs');
+    defs.append('marker')
       .attr('id', 'arrow')
       .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 20).attr('refY', 0)
-      .attr('markerWidth', 6).attr('markerHeight', 6)
+      .attr('refX', 10).attr('refY', 0)
+      .attr('markerWidth', 7).attr('markerHeight', 7)
       .attr('orient', 'auto')
-      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#999');
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#555');
+
+    // Self-loop marker (slightly offset)
+    defs.append('marker')
+      .attr('id', 'arrow-self')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 10).attr('refY', 0)
+      .attr('markerWidth', 7).attr('markerHeight', 7)
+      .attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#555');
 
     const g = svg.append('g');
 
@@ -868,14 +907,49 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
     }));
 
     const simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(d => d.id).distance(120))
-      .force('charge', d3.forceManyBody().strength(-300))
+      .force('link', d3.forceLink(links).id(d => d.id).distance(160))
+      .force('charge', d3.forceManyBody().strength(-500))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(40));
+      .force('collision', d3.forceCollide().radius(60));
 
-    const link = g.append('g').selectAll('line').data(links).join('line').attr('class', 'link');
-    const linkLabel = g.append('g').selectAll('text').data(links).join('text')
-      .attr('class', 'link-label').text(d => d.label);
+    // Separate self-loops from normal links
+    const selfLinks = links.filter(l => l.source === l.target || (l.source.id && l.source.id === l.target.id));
+    const normalLinks = links.filter(l => !(l.source === l.target || (l.source.id && l.source.id === l.target.id)));
+
+    // Helper: intersection of line from center to point with ellipse boundary
+    function ellipseIntersect(cx, cy, px, py) {
+      const dx = px - cx, dy = py - cy;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d === 0) return { x: cx + RX, y: cy };
+      const t = 1 / Math.sqrt((dx*dx)/(RX*RX) + (dy*dy)/(RY*RY));
+      return { x: cx + dx*t, y: cy + dy*t };
+    }
+
+    const link = g.append('g').selectAll('path').data(normalLinks).join('path')
+      .attr('class', 'link')
+      .attr('marker-end', 'url(#arrow)');
+
+    const linkLabel = g.append('g').selectAll('g').data(normalLinks).join('g');
+    linkLabel.append('rect')
+      .attr('fill', 'white').attr('rx', 3).attr('ry', 3).attr('opacity', 0.85);
+    linkLabel.append('text')
+      .attr('class', 'link-label')
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'central')
+      .text(d => d.label);
+
+    // Self-loop arcs
+    const selfLink = g.append('g').selectAll('path').data(selfLinks).join('path')
+      .attr('class', 'link')
+      .attr('marker-end', 'url(#arrow-self)');
+
+    const selfLabel = g.append('g').selectAll('g').data(selfLinks).join('g');
+    selfLabel.append('rect').attr('fill', 'white').attr('rx', 3).attr('ry', 3).attr('opacity', 0.85);
+    selfLabel.append('text')
+      .attr('class', 'link-label')
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'central')
+      .text(d => d.label);
 
     const node = g.append('g').selectAll('g').data(nodes).join('g').attr('class', 'node')
       .call(d3.drag()
@@ -890,15 +964,50 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
         })
       );
 
-    node.append('circle').attr('r', 18).attr('fill', d => groupColors[d.group]);
+    node.append('ellipse')
+      .attr('rx', RX).attr('ry', RY)
+      .attr('fill', d => groupColors[d.group] || '#76b7b2');
     node.append('text').text(d => d.id);
 
     simulation.on('tick', () => {
-      link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-          .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-      linkLabel
-        .attr('x', d => (d.source.x + d.target.x) / 2)
-        .attr('y', d => (d.source.y + d.target.y) / 2);
+      // Normal links as straight paths with ellipse-boundary endpoints
+      link.attr('d', d => {
+        const src = ellipseIntersect(d.source.x, d.source.y, d.target.x, d.target.y);
+        const tgt = ellipseIntersect(d.target.x, d.target.y, d.source.x, d.source.y);
+        return \`M\${src.x},\${src.y} L\${tgt.x},\${tgt.y}\`;
+      });
+
+      // Link labels centered on each edge with background rect
+      linkLabel.attr('transform', d => {
+        const mx = (d.source.x + d.target.x) / 2;
+        const my = (d.source.y + d.target.y) / 2;
+        return \`translate(\${mx},\${my})\`;
+      });
+      linkLabel.select('text').each(function() {
+        const bbox = this.getBBox();
+        d3.select(this.parentNode).select('rect')
+          .attr('x', bbox.x - 3).attr('y', bbox.y - 2)
+          .attr('width', bbox.width + 6).attr('height', bbox.height + 4);
+      });
+
+      // Self-loops as arcs above the node
+      selfLink.attr('d', d => {
+        const cx = d.source.x, cy = d.source.y;
+        const x1 = cx - RX * 0.6, y1 = cy - RY;
+        const x2 = cx + RX * 0.6, y2 = cy - RY;
+        return \`M\${x1},\${y1} C\${x1},\${cy - RY*3} \${x2},\${cy - RY*3} \${x2},\${y2}\`;
+      });
+
+      selfLabel.attr('transform', d => {
+        return \`translate(\${d.source.x},\${d.source.y - RY * 3.2})\`;
+      });
+      selfLabel.select('text').each(function() {
+        const bbox = this.getBBox();
+        d3.select(this.parentNode).select('rect')
+          .attr('x', bbox.x - 3).attr('y', bbox.y - 2)
+          .attr('width', bbox.width + 6).attr('height', bbox.height + 4);
+      });
+
       node.attr('transform', d => \`translate(\${d.x},\${d.y})\`);
     });
   </script>
@@ -931,7 +1040,13 @@ function parseInstance(instanceText: string, stateIndex: number = 0): {
     nodeIds.add(id);
   };
 
-  const stateBlocks = instanceText.split(/------State \d+.*?-------/);
+  // Robust separator: handles variations in dash count (4–12), optional
+  // trailing text after the state number, and surrounding whitespace.
+  // Matches formats like:
+  //   ------State 0-------
+  //   ------State 0 (loop)-------
+  //   ----State 0----
+  const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
   const targetBlock = stateBlocks[stateIndex + 1] || stateBlocks[1] || '';
 
   const lines = targetBlock.split('\n');
@@ -1004,7 +1119,7 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
     if (!error && r.response.instance) {
       const instanceText = r.response.instance;
       if (sat) {
-        const stateBlocks = instanceText.split(/------State \d+.*?-------/);
+        const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
         const firstState = stateBlocks[1] || stateBlocks[0] || '';
         const relevantLines = firstState.split('\n')
           .filter((line: string) =>
