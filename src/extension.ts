@@ -147,7 +147,7 @@ export function activate(context: vscode.ExtensionContext) {
                 hasNext: response.hasNext,
                 hasPrevious: response.hasPrevious || false,
                 sessionId: response.sessionId,
-                currentStateIndex: 0
+                currentStateIndex: message.command === 'newFork' ? (message.stateIndex ?? 0) : 0
               });
             } catch (err: any) {
               vscode.window.showErrorMessage('Error: ' + err.message);
@@ -967,7 +967,7 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
     node.append('ellipse')
       .attr('rx', RX).attr('ry', RY)
       .attr('fill', d => groupColors[d.group] || '#76b7b2');
-    node.append('text').text(d => d.id);
+    node.append('text').text(d => d.labels.length ? \`\${d.id} (\${d.labels.join(', ')})\` : d.id);
 
     simulation.on('tick', () => {
       // Normal links as straight paths with ellipse-boundary endpoints
@@ -1016,13 +1016,14 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
 }
 
 function parseInstance(instanceText: string, stateIndex: number = 0): {
-  nodes: { id: string; group: string }[];
+  nodes: { id: string; group: string; labels: string[] }[];
   links: { source: string; target: string; label: string }[];
   groupColors: Record<string, string>;
 } {
-  const nodes: { id: string; group: string }[] = [];
+  const nodes: { id: string; group: string; labels: string[] }[] = [];
   const links: { source: string; target: string; label: string }[] = [];
   const nodeIds = new Set<string>();
+  const linkKeys = new Set<string>();
   const groupColors: Record<string, string> = {};
   const palette = [
     '#4e79a7', '#f28e2b', '#e15759', '#76b7b2',
@@ -1036,7 +1037,7 @@ function parseInstance(instanceText: string, stateIndex: number = 0): {
     if (!groupColors[group]) {
       groupColors[group] = palette[colorIndex++ % palette.length];
     }
-    nodes.push({ id, group });
+    nodes.push({ id, group, labels: [] });
     nodeIds.add(id);
   };
 
@@ -1047,9 +1048,16 @@ function parseInstance(instanceText: string, stateIndex: number = 0): {
   //   ------State 0 (loop)-------
   //   ----State 0----
   const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
-  const targetBlock = stateBlocks[stateIndex + 1] || stateBlocks[1] || '';
+  const hasStates = stateBlocks.length > 1;
+  // Cabeçalho: sigs e fields estáticos, comuns a todos os estados
+  const header = hasStates ? stateBlocks[0] : '';
+  // Bloco do estado pedido; em modelos estruturais, o texto todo
+  const targetBlock = hasStates
+    ? (stateBlocks[stateIndex + 1] ?? stateBlocks[1])
+    : stateBlocks[0];
 
-  const lines = targetBlock.split('\n');
+  const lines = (header + '\n' + targetBlock).split('\n');
+
   for (const line of lines) {
     const relMatch = line.match(/this\/\w+<:(\w+)=\{(.+)\}/);
     if (relMatch) {
@@ -1060,6 +1068,9 @@ function parseInstance(instanceText: string, stateIndex: number = 0): {
         if (parts.length === 2) {
           const source = parts[0].trim();
           const target = parts[1].trim();
+          const key = `${source}|${target}|${relName}`;
+          if (linkKeys.has(key)) continue; // evitar arestas duplicadas
+          linkKeys.add(key);
           addNode(source);
           addNode(target);
           links.push({ source, target, label: relName });
@@ -1068,11 +1079,17 @@ function parseInstance(instanceText: string, stateIndex: number = 0): {
       continue;
     }
 
-    const sigMatch = line.match(/this\/\w+=\{(.+)\}/);
+    const sigMatch = line.match(/this\/(\w+)=\{(.+)\}/);
     if (sigMatch) {
-      const atoms = sigMatch[1].split(',').map(a => a.trim());
+      const sigName = sigMatch[1];
+      const atoms = sigMatch[2].split(',').map(a => a.trim()).filter(a => a);
       for (const atom of atoms) {
         addNode(atom);
+        // Se o átomo não pertence "naturalmente" a esta sig, é uma subset sig (ex.: On)
+        if (atom.split('$')[0] !== sigName) {
+          const n = nodes.find(n => n.id === atom);
+          if (n && !n.labels.includes(sigName)) n.labels.push(sigName);
+        }
       }
     }
   }
@@ -1120,8 +1137,10 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
       const instanceText = r.response.instance;
       if (sat) {
         const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
-        const firstState = stateBlocks[1] || stateBlocks[0] || '';
-        const relevantLines = firstState.split('\n')
+        const hasStates = stateBlocks.length > 1;
+        const header = hasStates ? stateBlocks[0] : '';
+        const firstState = hasStates ? stateBlocks[1] : stateBlocks[0];
+        const relevantLines = (header + '\n' + firstState).split('\n')
           .filter((line: string) =>
             line.includes('this/') &&
             !line.includes('univ') &&

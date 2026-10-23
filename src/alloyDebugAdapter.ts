@@ -146,12 +146,12 @@ export class AlloyDebugSession extends LoggingDebugSession {
     const commandLine = this.getCommandLine();
     const frames: StackFrame[] = [];
 
-    for (let i = 0; i < traceLength; i++) {
+    // O estado atual fica no topo; por baixo, os estados anteriores (como uma call stack)
+    for (let i = this.currentStateIndex; i >= 0; i--) {
       const isLoop = i === loopState;
-      const isCurrent = i === this.currentStateIndex;
       frames.push(new StackFrame(
         i,
-        `${isCurrent ? '▶ ' : '   '}State ${i}${isLoop ? ' ↺' : ''}`,
+        `State ${i}${isLoop ? ' ↺' : ''}`,
         new Source(this.file, this.file),
         commandLine
       ));
@@ -159,7 +159,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
 
     response.body = {
       stackFrames: frames,
-      totalFrames: traceLength
+      totalFrames: frames.length
     };
     this.sendResponse(response);
   }
@@ -226,7 +226,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
     response: DebugProtocol.NextResponse,
     args: DebugProtocol.NextArguments
   ): Promise<void> {
-    await this.navigate('next', response);
+    await this.navigate(this.currentInstance?.isTemporal ? 'newFork' : 'next', response);
   }
 
   // Step Back — New Init
@@ -250,7 +250,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
     response: DebugProtocol.ContinueResponse,
     args: DebugProtocol.ContinueArguments
   ): Promise<void> {
-    await this.navigate('newFork', response);
+    await this.navigate('next', response);
   }
 
   private async navigate(action: string, response: any): Promise<void> {
@@ -279,7 +279,13 @@ export class AlloyDebugSession extends LoggingDebugSession {
       }
 
       this.currentInstance = result;
-      this.currentStateIndex = 0;
+
+      if (action === 'newFork') {
+        const maxState = (result.traceLength || 1) - 1;
+        this.currentStateIndex = Math.min(this.currentStateIndex, maxState);
+      } else {
+        this.currentStateIndex = 0;
+      }
 
       alloyState.setInstance({
         sessionId: this.sessionId,
@@ -292,7 +298,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
         hasPrevious: result.hasPrevious || false,
         satisfiable: result.satisfiable,
         commandLabel: this.commandLabel,
-        currentStateIndex: 0
+        currentStateIndex: this.currentStateIndex
       });
 
       this.sendResponse(response);
@@ -352,12 +358,19 @@ export class AlloyDebugSession extends LoggingDebugSession {
 
   // Parsear variáveis do texto da instância
   private parseVariables(instanceText: string, stateIndex: number, scope: number): Variable[] {
-    const variables: Variable[] = [];
+    // Usar um Map para evitar duplicados: o valor do estado sobrepõe-se ao do cabeçalho
+    const variables = new Map<string, Variable>();
 
     // Dividir em estados
-    const stateBlocks = instanceText.split(/------State \d+.*?-------/);
-    const targetBlock = stateBlocks[stateIndex + 1] || stateBlocks[1] || '';
-    const lines = targetBlock.split('\n');
+    const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
+    const hasStates = stateBlocks.length > 1;
+    // Cabeçalho: sigs e fields estáticos, comuns a todos os estados
+    const header = hasStates ? stateBlocks[0] : '';
+    // Bloco do estado pedido; em modelos estruturais, o texto todo
+    const stateBlock = hasStates
+      ? (stateBlocks[stateIndex + 1] ?? stateBlocks[1])
+      : stateBlocks[0];
+    const lines = (header + '\n' + stateBlock).split('\n');
 
     for (const line of lines) {
       if (!line.trim() || line.includes('univ=') || line.includes('Int=') ||
@@ -367,27 +380,29 @@ export class AlloyDebugSession extends LoggingDebugSession {
 
       // Relações: this/Borrows<:person={...}
       const relMatch = line.match(/this\/\w+<:(\w+)=\{(.*)\}/);
-      if (relMatch && scope === 2) {
-        variables.push({
-          name: relMatch[1],
-          value: relMatch[2] || '{}',
-          variablesReference: 0
-        });
+      if (relMatch) {
+        if (scope === 2) {
+          variables.set(relMatch[1], {
+            name: relMatch[1],
+            value: `{${relMatch[2]}}`,
+            variablesReference: 0
+          });
+        }
         continue;
       }
 
       // Sigs: this/Person={...}
       const sigMatch = line.match(/this\/(\w+)=\{(.*)\}/);
       if (sigMatch && scope === 1) {
-        variables.push({
+        variables.set(sigMatch[1], {
           name: sigMatch[1],
-          value: sigMatch[2] || '{}',
+          value: `{${sigMatch[2]}}`,
           variablesReference: 0
         });
       }
     }
 
-    return variables;
+    return Array.from(variables.values());
   }
 
   protected async evaluateRequest(

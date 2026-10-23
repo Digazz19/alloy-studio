@@ -74,11 +74,13 @@ export function createAlloyTestController(
     }
   }
 
-  // Extrair linhas relevantes da instância
+  // Extrair linhas relevantes da instância (cabeçalho estático + primeiro estado)
   function extractRelevantLines(instanceText: string): string {
-    const stateBlocks = instanceText.split(/------State \d+.*?-------/);
-    const firstState = stateBlocks[1] || stateBlocks[0] || '';
-    return firstState.split('\n')
+    const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
+    const hasStates = stateBlocks.length > 1;
+    const header = hasStates ? stateBlocks[0] : '';
+    const firstState = hasStates ? stateBlocks[1] : stateBlocks[0];
+    return (header + '\n' + firstState).split('\n')
       .filter((line: string) =>
         line.includes('this/') &&
         !line.includes('univ') &&
