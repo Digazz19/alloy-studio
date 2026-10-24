@@ -400,10 +400,17 @@ export function activate(context: vscode.ExtensionContext) {
       panel.webview.html = getLoadingHtml();
 
       try {
+        const alloyConfig = vscode.workspace.getConfiguration('alloy');
         const response = await sendToServer({
           action: 'execute',
           file: targetFile,
-          commandIndex: selectedIndex
+          commandIndex: selectedIndex,
+          solver: alloyConfig.get('solver', 'sat4j'),
+          symmetry: alloyConfig.get('symmetry', 20),
+          skolemDepth: alloyConfig.get('skolemDepth', 0),
+          noOverflow: alloyConfig.get('noOverflow', false),
+          unrolls: alloyConfig.get('unrolls', -1),
+          decomposeMode: 0
         });
 
         if (response.error) {
