@@ -73,6 +73,7 @@ public class AlloyServer {
                 default:          return error("Unknown action: " + action);
             }
         } catch (Exception e) {
+            e.printStackTrace();
             return error(e.getMessage());
         }
     }
@@ -400,14 +401,16 @@ public class AlloyServer {
 
     private static String buildResponse(String sessionId, A4Solution solution, Command command) {
         JsonObject response = new JsonObject();
+        boolean sat = solution.satisfiable();
         response.addProperty("sessionId", sessionId);
         response.addProperty("commandLabel", command.toString());
-        response.addProperty("satisfiable", solution.satisfiable());
-        response.addProperty("hasNext", solution.satisfiable());
+        response.addProperty("satisfiable", sat);
+        response.addProperty("hasNext", sat);
         response.addProperty("isTemporal", isTemporalModel(sessionId));
-        response.addProperty("traceLength", solution.getTraceLength());
-        response.addProperty("loopState", solution.getLoopState());
-        response.addProperty("hasConfigs", solution.hasConfigs());
+        // Uma solução UNSAT não tem instância (eval == null): não pedir dados da trace
+        response.addProperty("traceLength", sat ? solution.getTraceLength() : 0);
+        response.addProperty("loopState", sat ? solution.getLoopState() : -1);
+        response.addProperty("hasConfigs", sat && solution.hasConfigs());
 
         // Indicar se há instância anterior no histórico
         List<A4Solution> history = sessionHistory.get(sessionId);
