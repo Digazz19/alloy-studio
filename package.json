@@ -121,6 +121,10 @@
       {
         "command": "alloy.configure",
         "title": "Alloy: Configure Analysis Options"
+      },
+      { 
+        "command": "alloy.showMetamodel", 
+        "title": "Alloy: Show Metamodel" 
       }
     ],
     "menus": {

@@ -81,14 +81,11 @@ export function createAlloyTestController(
     const header = hasStates ? stateBlocks[0] : '';
     const firstState = hasStates ? stateBlocks[1] : stateBlocks[0];
     return (header + '\n' + firstState).split('\n')
-      .filter((line: string) =>
-        line.includes('this/') &&
-        !line.includes('univ') &&
-        !line.includes('Int=') &&
-        !line.includes('seq/') &&
-        !line.includes('String=') &&
-        !line.includes('none=')
-      )
+      .filter((line: string) => {
+        const l = line.trim();
+        return /^[\w$\/]+(<:[\w$']+)?=\{/.test(l) &&
+               !/^(univ|Int|seq\/Int|String|none)=/.test(l);
+      })
       .map((line: string) => line.trim())
       .join('\n');
   }

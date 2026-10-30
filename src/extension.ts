@@ -147,7 +147,8 @@ export function activate(context: vscode.ExtensionContext) {
                 hasNext: response.hasNext,
                 hasPrevious: response.hasPrevious || false,
                 sessionId: response.sessionId,
-                currentStateIndex: message.command === 'newFork' ? (message.stateIndex ?? 0) : 0
+                currentStateIndex: message.command === 'newFork' ? (message.stateIndex ?? 0) : 0,
+                subsetSigs: response.subsetSigs ?? []
               });
             } catch (err: any) {
               vscode.window.showErrorMessage('Error: ' + err.message);
@@ -561,6 +562,52 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // --- Show Metamodel ---
+  context.subscriptions.push(
+    vscode.commands.registerCommand('alloy.showMetamodel', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || !editor.document.fileName.endsWith('.als')) {
+        vscode.window.showErrorMessage('No .als file open.');
+        return;
+      }
+      // O servidor lê o ficheiro do disco
+      if (editor.document.isDirty) await editor.document.save();
+
+      const fileName = editor.document.fileName.split(/[\\/]/).pop();
+      const panel = vscode.window.createWebviewPanel(
+        'alloyMetamodel',
+        `Alloy Metamodel: ${fileName}`,
+        vscode.ViewColumn.Beside,
+        { enableScripts: true }
+      );
+      panel.webview.html = getLoadingHtml();
+
+      try {
+        const response = await sendToServer({
+          action: 'metamodel',
+          file: editor.document.uri.fsPath
+        });
+        if (response.error) {
+          panel.webview.html = getErrorHtml(response.error);
+          return;
+        }
+        const groupColors: Record<string, string> = {};
+        for (const n of response.nodes) {
+          if (!groupColors[n.group]) groupColors[n.group] = paletteColor(Object.keys(groupColors).length);
+        }
+        panel.webview.html = getResultsHtml({ satisfiable: true }, 'Metamodel', 0, {
+          nodes: response.nodes,
+          links: response.links,
+          groupColors
+        });
+      } catch (err: any) {
+        panel.webview.html = getErrorHtml(
+          'Error communicating with the Alloy Server.\n' + err.message
+        );
+      }
+    })
+  );
+
   // --- Testing ---
   createAlloyTestController(context, sendToServer);
 
@@ -695,7 +742,24 @@ function getErrorHtml(message: string): string {
   </html>`;
 }
 
-function getResultsHtml(response: any, commandLabel: string, currentState: number = 0): string {
+// Grafo já construído (usado pelo Show Metamodel, que não passa pelo parseInstance)
+type GraphData = {
+  nodes: { id: string; group: string; labels: string[] }[];
+  links: { source: string; target: string; label: string }[];
+  groupColors: Record<string, string>;
+};
+
+// Cores dos grupos: palette fixa e, se houver mais grupos, tons gerados com o ângulo de ouro
+const PALETTE = [
+  '#4e79a7', '#f28e2b', '#e15759', '#76b7b2',
+  '#59a14f', '#edc948', '#b07aa1', '#ff9da7',
+  '#9c755f', '#bab0ac', '#86bcb6', '#d4a6c8'
+];
+function paletteColor(i: number): string {
+  return i < PALETTE.length ? PALETTE[i] : `hsl(${Math.round((i * 137.5) % 360)}, 55%, 65%)`;
+}
+
+function getResultsHtml(response: any, commandLabel: string, currentState: number = 0, graph?: GraphData): string {
   const instanceText = response.instance || '';
   const sessionId = response.sessionId || '';
   const hasNext = response.hasNext || false;
@@ -703,7 +767,7 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
   const satisfiable = response.satisfiable || false;
   const isTemporal = response.isTemporal || false;
   const traceLength = response.traceLength || 1;
-  const loopState = response.loopState || -1;
+  const loopState = response.loopState ?? -1;
   const hasConfigs = response.hasConfigs || false;
 
   if (!satisfiable) {
@@ -720,7 +784,7 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
     </body></html>`;
   }
 
-  const { nodes, links, groupColors } = parseInstance(instanceText, currentState);
+  const { nodes, links, groupColors } = graph ?? parseInstance(instanceText, currentState, response.subsetSigs || []);
   const nodesJson = JSON.stringify(nodes);
   const linksJson = JSON.stringify(links);
   const colorsJson = JSON.stringify(groupColors);
@@ -814,9 +878,9 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
 </head>
 <body>
   <div id="toolbar">
-    <strong>Alloy Instance</strong>
+    <strong>${graph ? 'Alloy Metamodel' : 'Alloy Instance'}</strong>
     <div id="legend"></div>
-    <div id="nav-buttons">
+    <div id="nav-buttons" ${graph ? 'style="display:none"' : ''}>
       <button id="btn-previous" ${hasPrevious ? '' : 'disabled'} title="Previous instance">◀ Previous</button>
       <button id="btn-next" ${hasNext ? '' : 'disabled'} title="Next instance">Next ▶</button>
       <button id="btn-newTrace" ${hasNext ? '' : 'disabled'} title="New trace">New Trace</button>
@@ -917,7 +981,9 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
       .force('link', d3.forceLink(links).id(d => d.id).distance(160))
       .force('charge', d3.forceManyBody().strength(-500))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(60));
+      .force('collision', d3.forceCollide().radius(60))
+      .force('x', d3.forceX(width / 2).strength(0.05))
+      .force('y', d3.forceY(height / 2).strength(0.05));
 
     // Separate self-loops from normal links
     const selfLinks = links.filter(l => l.source === l.target || (l.source.id && l.source.id === l.target.id));
@@ -1022,7 +1088,7 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
 </html>`;
 }
 
-function parseInstance(instanceText: string, stateIndex: number = 0): {
+function parseInstance(instanceText: string, stateIndex: number = 0, subsetSigs: string[] = []): {
   nodes: { id: string; group: string; labels: string[] }[];
   links: { source: string; target: string; label: string }[];
   groupColors: Record<string, string>;
@@ -1032,71 +1098,92 @@ function parseInstance(instanceText: string, stateIndex: number = 0): {
   const nodeIds = new Set<string>();
   const linkKeys = new Set<string>();
   const groupColors: Record<string, string> = {};
-  const palette = [
-    '#4e79a7', '#f28e2b', '#e15759', '#76b7b2',
-    '#59a14f', '#edc948', '#b07aa1', '#ff9da7'
-  ];
   let colorIndex = 0;
+  const nextColor = () => paletteColor(colorIndex++);
+
+  const BUILTIN = /^(univ|Int|seq\/Int|String|none)=/;
+  // Átomo da sig interna do util/ordering (ex.: yo/Ord$0), que o Analyzer também esconde
+  const isOrdAtom = (atom: string) => /(^|\/)Ord\$\d+$/.test(atom);
+  const splitList = (s: string) => s.trim() ? s.split(',').map(x => x.trim()).filter(x => x) : [];
+  const displayName = (full: string) => full.startsWith('this/') ? full.slice(5) : full;
 
   const addNode = (id: string) => {
-    if (/^-?\d+$/.test(id) || nodeIds.has(id)) return;
-    const group = id.split('$')[0].replace('this/', '');
+    if (/^-?\d+$/.test(id) || isOrdAtom(id) || nodeIds.has(id)) return;
+    const group = id.replace(/\$\d+$/, '');   // ex.: people/Student$0 -> people/Student
     if (!groupColors[group]) {
-      groupColors[group] = palette[colorIndex++ % palette.length];
+      groupColors[group] = nextColor();
     }
     nodes.push({ id, group, labels: [] });
     nodeIds.add(id);
   };
 
+  const addLabel = (atom: string, label: string) => {
+    addNode(atom);
+    const n = nodes.find(n => n.id === atom);
+    if (n && !n.labels.includes(label)) n.labels.push(label);
+  };
+
   // Robust separator: handles variations in dash count (4–12), optional
   // trailing text after the state number, and surrounding whitespace.
-  // Matches formats like:
-  //   ------State 0-------
-  //   ------State 0 (loop)-------
-  //   ----State 0----
   const stateBlocks = instanceText.split(/\s*-{4,}State\s+\d+[^\n-]*-{4,}\s*/i);
   const hasStates = stateBlocks.length > 1;
-  // Cabeçalho: sigs e fields estáticos, comuns a todos os estados
   const header = hasStates ? stateBlocks[0] : '';
-  // Bloco do estado pedido; em modelos estruturais, o texto todo
   const targetBlock = hasStates
     ? (stateBlocks[stateIndex + 1] ?? stateBlocks[1])
     : stateBlocks[0];
 
   const lines = (header + '\n' + targetBlock).split('\n');
 
-  for (const line of lines) {
-    const relMatch = line.match(/this\/\w+<:(\w+)=\{(.+)\}/);
-    if (relMatch) {
-      const relName = relMatch[1];
-      const tuples = relMatch[2].split(',').map(t => t.trim());
-      for (const tuple of tuples) {
-        const parts = tuple.split('->');
-        if (parts.length === 2) {
-          const source = parts[0].trim();
-          const target = parts[1].trim();
-          const key = `${source}|${target}|${relName}`;
-          if (linkKeys.has(key)) continue; // evitar arestas duplicadas
-          linkKeys.add(key);
-          addNode(source);
-          addNode(target);
-          links.push({ source, target, label: relName });
-        }
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || BUILTIN.test(line)) continue;
+
+    // Skolems unários: skolem $canTakeThesis_s={people/Student$0} -> rótulo no átomo
+    const skMatch = line.match(/^skolem\s+(\$[\w']+)=\{(.*)\}$/);
+    if (skMatch) {
+      for (const tuple of splitList(skMatch[2])) {
+        if (!tuple.includes('->')) addLabel(tuple, skMatch[1]);
       }
       continue;
     }
 
-    const sigMatch = line.match(/this\/(\w+)=\{(.+)\}/);
-    if (sigMatch) {
-      const sigName = sigMatch[1];
-      const atoms = sigMatch[2].split(',').map(a => a.trim()).filter(a => a);
-      for (const atom of atoms) {
-        addNode(atom);
-        // Se o átomo não pertence "naturalmente" a esta sig, é uma subset sig (ex.: On)
-        if (atom.split('$')[0] !== sigName) {
-          const n = nodes.find(n => n.id === atom);
-          if (n && !n.labels.includes(sigName)) n.labels.push(sigName);
+    // Relações: owner<:field={a->b, a->b->c, ...}
+    const relMatch = line.match(/^([\w$\/]+)<:([\w$']+)=\{(.*)\}$/);
+    if (relMatch) {
+      const isOrdField = /(^|\/)Ord$/.test(relMatch[1]);
+      const relName = isOrdField ? relMatch[2].toLowerCase() : relMatch[2];
+      for (const tuple of splitList(relMatch[3])) {
+        let parts = tuple.split('->').map(p => p.trim());
+        // util/ordering: descartar o átomo Ord (ex.: Ord$0->Year$0->Year$1 vira Year$0 -> Year$1)
+        if (isOrdAtom(parts[0])) parts = parts.slice(1);
+
+        if (parts.length === 1) {          // ex.: First do ordering -> rótulo "first"
+          addLabel(parts[0], relName);
+          continue;
         }
+        const source = parts[0];
+        const target = parts[parts.length - 1];
+        const middle = parts.slice(1, -1); // relações n-árias: átomos do meio no rótulo
+        const label = middle.length ? `${relName} [${middle.join(', ')}]` : relName;
+        const key = `${source}|${target}|${label}`;
+        if (linkKeys.has(key)) continue;
+        linkKeys.add(key);
+        addNode(source);
+        addNode(target);
+        links.push({ source, target, label });
+      }
+      continue;
+    }
+
+    // Sigs: this/Year={...}, people/Student={...}
+    const sigMatch = line.match(/^([\w$\/]+)=\{(.*)\}$/);
+    if (sigMatch) {
+      const full = sigMatch[1];
+      if (/(^|\/)Ord$/.test(full)) continue;          // sig interna do util/ordering
+      const isSubset = subsetSigs.includes(full);
+      for (const atom of splitList(sigMatch[2])) {
+        addNode(atom);
+        if (isSubset) addLabel(atom, displayName(full));
       }
     }
   }
@@ -1148,14 +1235,13 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
         const header = hasStates ? stateBlocks[0] : '';
         const firstState = hasStates ? stateBlocks[1] : stateBlocks[0];
         const relevantLines = (header + '\n' + firstState).split('\n')
-          .filter((line: string) =>
-            line.includes('this/') &&
-            !line.includes('univ') &&
-            !line.includes('Int=') &&
-            !line.includes('seq/') &&
-            !line.includes('String=') &&
-            !line.includes('none=')
-          )
+          .filter((line: string) => {
+            const l = line.trim();
+            // Accepts sigs and fields of any module (this/, people/, ...)
+            // excludes predefined lines (univ, Int, seq/Int, String, none)
+            return /^[\w$\/]+(<:[\w$']+)?=\{/.test(l) &&
+                   !/^(univ|Int|seq\/Int|String|none)=/.test(l);
+          })
           .map((line: string) => line.trim())
           .join(', ');
         firstResult = relevantLines || '{}';

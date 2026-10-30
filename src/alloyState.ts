@@ -12,6 +12,7 @@ export interface AlloyInstance {
   satisfiable: boolean;
   commandLabel: string;
   currentStateIndex: number;
+  subsetSigs?: string[];
 }
 
 class AlloyStateManager extends EventEmitter {

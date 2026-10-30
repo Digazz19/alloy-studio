@@ -2,6 +2,7 @@ package com.alloy.server;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
 import edu.mit.csail.sdg.alloy4.A4Reporter;
 import edu.mit.csail.sdg.alloy4.Err;
 import edu.mit.csail.sdg.ast.Command;
@@ -11,6 +12,9 @@ import edu.mit.csail.sdg.translator.A4Options;
 import edu.mit.csail.sdg.translator.A4Solution;
 import edu.mit.csail.sdg.translator.TranslateAlloyToKodkod;
 import edu.mit.csail.sdg.ast.Sig;
+import edu.mit.csail.sdg.ast.Sig.PrimSig;
+import edu.mit.csail.sdg.ast.Sig.SubsetSig;
+import edu.mit.csail.sdg.ast.Sig.Field;
 
 import java.io.*;
 import java.net.*;
@@ -70,6 +74,7 @@ public class AlloyServer {
                 case "newFork":   return handleNewFork(req);
                 case "close":     return handleClose(req);
                 case "evaluate":  return handleEvaluate(req);
+                case "metamodel": return handleMetamodel(req);
                 default:          return error("Unknown action: " + action);
             }
         } catch (Exception e) {
@@ -412,6 +417,16 @@ public class AlloyServer {
         response.addProperty("loopState", sat ? solution.getLoopState() : -1);
         response.addProperty("hasConfigs", sat && solution.hasConfigs());
 
+        // Subset sigs (declaradas com 'in'), para o grafo as distinguir das sigs-pai de 'extends'
+        JsonArray subsetSigs = new JsonArray();
+        Module world = sessionModules.get(sessionId);
+        if (world != null) {
+            for (Sig s : world.getAllReachableSigs()) {
+                if (s instanceof Sig.SubsetSig) subsetSigs.add(s.label);
+            }
+        }
+        response.add("subsetSigs", subsetSigs);
+
         // Indicar se há instância anterior no histórico
         List<A4Solution> history = sessionHistory.get(sessionId);
         response.addProperty("hasPrevious", history != null && history.size() > 1);
@@ -421,6 +436,93 @@ public class AlloyServer {
         }
 
         return gson.toJson(response);
+    }
+
+    // Metamodelo: assinaturas como nós, extends/in e fields como arestas (como o Show Metamodel do Analyzer)
+    private static String handleMetamodel(JsonObject req) {
+        try {
+            String filePath = req.get("file").getAsString();
+            Module world = CompUtil.parseEverything_fromFile(new A4Reporter(), null, filePath);
+
+            Map<String, JsonObject> nodes = new LinkedHashMap<>();
+            JsonArray links = new JsonArray();
+            Set<String> linkKeys = new HashSet<>();
+
+            for (Sig s : world.getAllReachableUserDefinedSigs()) {
+                if (s.isPrivate != null) continue;            // ex.: Ord do util/ordering
+                JsonObject node = metaNode(nodes, s);
+                JsonArray labels = node.getAsJsonArray("labels");
+                if (s.isAbstract != null) labels.add("abstract");
+                if (s.isOne != null)      labels.add("one");
+                if (s.isLone != null)     labels.add("lone");
+                if (s.isSome != null)     labels.add("some");
+                if (s.isVariable != null) labels.add("var");
+
+                if (s instanceof PrimSig) {
+                    PrimSig parent = ((PrimSig) s).parent;
+                    if (parent != null && parent != Sig.UNIV) {
+                        metaNode(nodes, parent);
+                        metaLink(links, linkKeys, metaName(s), metaName(parent), "extends");
+                    }
+                } else if (s instanceof SubsetSig) {
+                    for (Sig p : ((SubsetSig) s).parents) {
+                        metaNode(nodes, p);
+                        metaLink(links, linkKeys, metaName(s), metaName(p), "in");
+                    }
+                }
+
+                for (Field f : s.getFields()) {
+                    if (f.isPrivate != null) continue;
+                    String fname = f.isVariable != null ? f.label + " (var)" : f.label;
+                    for (List<PrimSig> cols : f.type().fold()) {      // cols.get(0) é a sig dona
+                        for (PrimSig c : cols) metaNode(nodes, c);
+                        List<String> middle = new ArrayList<>();
+                        for (int i = 1; i < cols.size() - 1; i++) middle.add(metaName(cols.get(i)));
+                        String label = middle.isEmpty() ? fname : fname + " [" + String.join(", ", middle) + "]";
+                        metaLink(links, linkKeys, metaName(cols.get(0)), metaName(cols.get(cols.size() - 1)), label);
+                    }
+                }
+            }
+
+            JsonArray nodeArray = new JsonArray();
+            nodes.values().forEach(nodeArray::add);
+            JsonObject response = new JsonObject();
+            response.add("nodes", nodeArray);
+            response.add("links", links);
+            return gson.toJson(response);
+
+        } catch (Err e) {
+            return error(e.getMessage());
+        }
+    }
+
+    private static String metaName(Sig s) {
+        return s.label.startsWith("this/") ? s.label.substring(5) : s.label;
+    }
+
+    // Cria o nó se ainda não existir; o grupo (cor) é a assinatura de topo da hierarquia
+    private static JsonObject metaNode(Map<String, JsonObject> nodes, Sig s) {
+        return nodes.computeIfAbsent(metaName(s), id -> {
+            Sig top = s;
+            while (top instanceof PrimSig && ((PrimSig) top).parent != null && ((PrimSig) top).parent != Sig.UNIV)
+                top = ((PrimSig) top).parent;
+            if (top instanceof SubsetSig && !((SubsetSig) top).parents.isEmpty())
+                top = ((SubsetSig) top).parents.get(0);
+            JsonObject n = new JsonObject();
+            n.addProperty("id", id);
+            n.addProperty("group", s.builtin ? "builtin" : metaName(top));
+            n.add("labels", new JsonArray());
+            return n;
+        });
+    }
+
+    private static void metaLink(JsonArray links, Set<String> keys, String src, String tgt, String label) {
+        if (!keys.add(src + "|" + tgt + "|" + label)) return;
+        JsonObject l = new JsonObject();
+        l.addProperty("source", src);
+        l.addProperty("target", tgt);
+        l.addProperty("label", label);
+        links.add(l);
     }
 
     private static String error(String message) {

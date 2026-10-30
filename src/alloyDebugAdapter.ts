@@ -111,7 +111,8 @@ export class AlloyDebugSession extends LoggingDebugSession {
         hasPrevious: result.hasPrevious || false,
         satisfiable: result.satisfiable,
         commandLabel: this.commandLabel,
-        currentStateIndex: 0
+        currentStateIndex: 0,
+        subsetSigs: result.subsetSigs ?? []
       });
 
       this.sendResponse(response);
@@ -142,7 +143,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
     }
 
     const traceLength = this.currentInstance.traceLength || 1;
-    const loopState = this.currentInstance.loopState || -1;
+    const loopState = this.currentInstance.loopState ?? -1;
     const commandLine = this.getCommandLine();
     const frames: StackFrame[] = [];
 
@@ -221,7 +222,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
     this.sendResponse(response);
   }
 
-  // Next — próxima instância (Step Over)
+  // Step Over — New Fork (temporal) / Next (estrutural)
   protected async nextRequest(
     response: DebugProtocol.NextResponse,
     args: DebugProtocol.NextArguments
@@ -229,7 +230,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
     await this.navigate(this.currentInstance?.isTemporal ? 'newFork' : 'next', response);
   }
 
-  // Step Back — New Init
+  // Step Back — Previous
   protected async stepBackRequest(
     response: DebugProtocol.StepBackResponse,
     args: DebugProtocol.StepBackArguments
@@ -245,7 +246,7 @@ export class AlloyDebugSession extends LoggingDebugSession {
     await this.navigate('newTrace', response);
   }
 
-  // Continue — New Fork
+  // Continue — Next
   protected async continueRequest(
     response: DebugProtocol.ContinueResponse,
     args: DebugProtocol.ContinueArguments
@@ -298,7 +299,8 @@ export class AlloyDebugSession extends LoggingDebugSession {
         hasPrevious: result.hasPrevious || false,
         satisfiable: result.satisfiable,
         commandLabel: this.commandLabel,
-        currentStateIndex: this.currentStateIndex
+        currentStateIndex: this.currentStateIndex,
+        subsetSigs: result.subsetSigs ?? []
       });
 
       this.sendResponse(response);
@@ -331,7 +333,8 @@ export class AlloyDebugSession extends LoggingDebugSession {
         hasPrevious: this.currentInstance.hasPrevious || false,
         satisfiable: this.currentInstance.satisfiable,
         commandLabel: this.commandLabel,
-        currentStateIndex: this.currentStateIndex
+        currentStateIndex: this.currentStateIndex,
+        subsetSigs: this.currentInstance.subsetSigs ?? []
       });
       this.sendResponse(response);
       // Emitir stopped com o frame correto
@@ -372,33 +375,31 @@ export class AlloyDebugSession extends LoggingDebugSession {
       : stateBlocks[0];
     const lines = (header + '\n' + stateBlock).split('\n');
 
-    for (const line of lines) {
-      if (!line.trim() || line.includes('univ=') || line.includes('Int=') ||
-          line.includes('seq/Int=') || line.includes('String=') || line.includes('none=')) {
-        continue;
-      }
+    const BUILTIN = /^(univ|Int|seq\/Int|String|none)=/;
 
-      // Relações: this/Borrows<:person={...}
-      const relMatch = line.match(/this\/\w+<:(\w+)=\{(.*)\}/);
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line || BUILTIN.test(line) || line.startsWith('skolem')) continue;
+
+      // Relações: this/Course<:grades={...}  ou  people/Student<:name={...}
+      const relMatch = line.match(/^([\w$\/]+)<:([\w$']+)=\{(.*)\}$/);
       if (relMatch) {
         if (scope === 2) {
-          variables.set(relMatch[1], {
-            name: relMatch[1],
-            value: `{${relMatch[2]}}`,
-            variablesReference: 0
-          });
+          const owner = relMatch[1];
+          const name = owner.startsWith('this/')
+            ? relMatch[2]
+            : `${owner.split('/')[0]}/${relMatch[2]}`;
+          variables.set(name, { name, value: `{${relMatch[3]}}`, variablesReference: 0 });
         }
         continue;
       }
 
-      // Sigs: this/Person={...}
-      const sigMatch = line.match(/this\/(\w+)=\{(.*)\}/);
+      // Sigs: this/Year={...}  ou  people/Student={...}
+      const sigMatch = line.match(/^([\w$\/]+)=\{(.*)\}$/);
       if (sigMatch && scope === 1) {
-        variables.set(sigMatch[1], {
-          name: sigMatch[1],
-          value: `{${sigMatch[2]}}`,
-          variablesReference: 0
-        });
+        const full = sigMatch[1];
+        const name = full.startsWith('this/') ? full.slice(5) : full;
+        variables.set(name, { name, value: `{${sigMatch[2]}}`, variablesReference: 0 });
       }
     }
 
