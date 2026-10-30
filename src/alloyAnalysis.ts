@@ -62,8 +62,10 @@ export function reportAnalysis(commandLabel: string, response: any, reveal: bool
   if (response.error) out.appendLine('  Error: ' + response.error);
   if (response.unsatCore) {
     out.appendLine('  The unsat core is highlighted in the editor.');
-  } else if (response.satisfiable === false && response.coreSupported === false && !response.error) {
-    out.appendLine('  (Select the minisat.prover solver to obtain an unsat core.)');
+  } else if (response.satisfiable === false && !response.error) {
+    out.appendLine(response.coreSupported
+      ? '  No unsat core was returned by the solver.'
+      : '  (Select the minisat.prover solver to obtain an unsat core.)');
   }
   if (response.kodkod) out.appendLine('  Kodkod input recorded: run "Alloy: Show Kodkod Input" to open it.');
   out.appendLine('');

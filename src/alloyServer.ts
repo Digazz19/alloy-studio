@@ -35,7 +35,7 @@ export function startAlloyServer(quiet: boolean = false): void {
 
   const proc = cp.spawn(
     'java',
-    ['-jar', serverJarPath, String(ALLOY_SERVER_PORT)],
+    ['-Xss8m', '-jar', serverJarPath, String(ALLOY_SERVER_PORT)],
     { stdio: 'pipe' }
   );
   serverProcess = proc;

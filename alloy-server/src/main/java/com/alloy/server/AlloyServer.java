@@ -113,7 +113,7 @@ public class AlloyServer {
                     + " warning(s) found; the command was not executed. "
                     + "Fix the warnings, or enable the alloy.allowWarnings setting to execute despite them.");
                 response.add("warnings", reporter.warnings);
-                response.add("log", reporter.log);
+                response.add("log", reporter.logJson());
                 return gson.toJson(response);
             }
 
@@ -174,7 +174,7 @@ public class AlloyServer {
             sessionHistory.put(sessionId, new ArrayList<>(List.of(solution)));
 
             JsonObject response = buildResponseObject(sessionId, solution, command);
-            response.add("log", reporter.log);
+            response.add("log", reporter.logJson());
             response.add("warnings", reporter.warnings);
 
             // Unsat core: só disponível com um solver que produz provas (ex.: minisat.prover)
@@ -520,9 +520,20 @@ public class AlloyServer {
     // Recolhe o que o Analyzer mostra no message log (scopes, solver, tamanho do problema,
     // tempos, resultado) e os warnings, que a API só comunica através do A4Reporter
     private static class SessionReporter extends A4Reporter {
-        final JsonArray log = new JsonArray();
+        final List<String> log = new ArrayList<>();
         final JsonArray warnings = new JsonArray();
         private long startTime = System.currentTimeMillis();
+        // Estatísticas acumuladas da resolução (nos modelos temporais, o solve é chamado
+        // uma vez por cada número de passos tentado), como no Analyzer
+        private int startStep = -1, seenStep = -1, startCount = 0;
+        private int primaryVars = 0, totalVars = 0, clauses = 0;
+        private int solveLine = -1;
+
+        JsonArray logJson() {
+            JsonArray arr = new JsonArray();
+            for (String line : log) arr.add(line);
+            return arr;
+        }
 
         @Override
         public void warning(ErrorWarning msg) {
@@ -546,16 +557,47 @@ public class AlloyServer {
         public void translate(String solver, int bitwidth, int maxseq, int mintrace, int maxtrace,
                               int skolemDepth, int symmetry, String strat) {
             startTime = System.currentTimeMillis();
+            startStep = -1; seenStep = -1; startCount = 0;
+            primaryVars = 0; totalVars = 0; clauses = 0;
+            solveLine = -1;
             log.add("Solver=" + solver + (maxtrace < 1 ? "" : " Steps=" + mintrace + ".." + maxtrace)
                 + " Bitwidth=" + bitwidth + " MaxSeq=" + maxseq
                 + (skolemDepth == 0 ? "" : " SkolemDepth=" + skolemDepth)
                 + " Symmetry=" + (symmetry > 0 ? String.valueOf(symmetry) : "OFF") + " Mode=" + strat);
         }
 
+        // Scopes efetivos de cada sig, depois de aplicados os scopes do comando
         @Override
-        public void solve(int plength, int primaryVars, int totalVars, int clauses) {
-            log.add(totalVars + " vars. " + primaryVars + " primary vars. " + clauses + " clauses. "
-                + (System.currentTimeMillis() - startTime) + "ms.");
+        public void actualScopes(Iterable<Sig> sigs, Map<PrimSig, Integer> scopes, Set<Sig> exacts) {
+            StringBuilder sb = new StringBuilder();
+            for (Sig s : sigs) {
+                if (s.builtin || s.isSubset != null) continue;
+                String name = s.label.startsWith("this/") ? s.label.substring(5) : s.label;
+                if (sb.length() > 0) sb.append(", ");
+                if (exacts.contains(s)) sb.append("exactly ").append(scopes.get(s)).append(" ").append(name);
+                else if (scopes.containsKey(s)) sb.append(scopes.get(s)).append(" ").append(name);
+                else sb.append(name).append("????");
+            }
+            log.add("Actual scopes: " + sb);
+        }
+
+        // Uma única linha com os valores acumulados, atualizada a cada chamada
+        @Override
+        public void solve(int step, int pv, int tv, int cl) {
+            if (startStep < 0) startStep = step;
+            if (startStep == step) startCount++;
+            seenStep = Math.max(seenStep, step);
+            primaryVars += pv;
+            totalVars += tv;
+            clauses += cl;
+            StringBuilder sb = new StringBuilder();
+            if (startCount > 1) sb.append(startCount).append(" configs. ");
+            if (seenStep > 0) sb.append(startStep).append("..").append(seenStep).append(" steps. ");
+            sb.append(totalVars).append(" vars. ").append(primaryVars).append(" primary vars. ")
+              .append(clauses).append(" clauses. ")
+              .append(System.currentTimeMillis() - startTime).append("ms.");
+            if (solveLine >= 0) log.set(solveLine, sb.toString());
+            else { solveLine = log.size(); log.add(sb.toString()); }
         }
 
         @Override
