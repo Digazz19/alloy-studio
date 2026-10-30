@@ -5,6 +5,9 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 import edu.mit.csail.sdg.alloy4.A4Reporter;
 import edu.mit.csail.sdg.alloy4.Err;
+import edu.mit.csail.sdg.alloy4.ErrorWarning;
+import edu.mit.csail.sdg.alloy4.Pair;
+import edu.mit.csail.sdg.alloy4.Pos;
 import edu.mit.csail.sdg.ast.Command;
 import edu.mit.csail.sdg.ast.Module;
 import edu.mit.csail.sdg.parser.CompUtil;
@@ -89,8 +92,11 @@ public class AlloyServer {
             int commandIndex = req.get("commandIndex").getAsInt();
             String sessionId = UUID.randomUUID().toString();
 
-            A4Reporter reporter = new A4Reporter();
-            Module world = CompUtil.parseEverything_fromFile(reporter, null, filePath);
+            // Reporter que recolhe o que o Analyzer escreve no message log, e os warnings
+            SessionReporter reporter = new SessionReporter();
+            // Implicit 'this' (Analyzer: Options > Enable 'implicit this' name resolution)
+            int resolutionMode = optBoolean(req, "implicitThis", false) ? 2 : 1;
+            Module world = CompUtil.parseEverything_fromFile(reporter, null, filePath, resolutionMode);
             List<Command> commands = world.getAllCommands();
 
             if (commandIndex >= commands.size()) {
@@ -98,6 +104,19 @@ public class AlloyServer {
             }
 
             Command command = commands.get(commandIndex);
+
+            // Allow warnings: como no Analyzer, se estiver desligado e houver warnings,
+            // o comando não é executado
+            if (reporter.warnings.size() > 0 && !optBoolean(req, "allowWarnings", false)) {
+                JsonObject response = new JsonObject();
+                response.addProperty("error", reporter.warnings.size()
+                    + " warning(s) found; the command was not executed. "
+                    + "Fix the warnings, or enable the alloy.allowWarnings setting to execute despite them.");
+                response.add("warnings", reporter.warnings);
+                response.add("log", reporter.log);
+                return gson.toJson(response);
+            }
+
             A4Options options = new A4Options();
 
             // Solver
@@ -132,6 +151,18 @@ public class AlloyServer {
                 options.decompose_mode = req.get("decomposeMode").getAsInt();
             }
 
+            // Restantes opções do menu Options do Analyzer. O valor por omissão de
+            // inferPartialInstance na API é true, mas no Analyzer é false: usar o do Analyzer.
+            options.inferPartialInstance = optBoolean(req, "inferPartialInstance", false);
+            options.recordKodkod = optBoolean(req, "recordKodkod", false);
+            if (req.has("coreMinimization") && !req.get("coreMinimization").isJsonNull()) {
+                options.coreMinimization = req.get("coreMinimization").getAsInt();
+            }
+            if (req.has("coreGranularity") && !req.get("coreGranularity").isJsonNull()) {
+                options.coreGranularity = req.get("coreGranularity").getAsInt();
+            }
+
+            reporter.log.add("Executing \"" + command + "\"");
             A4Solution solution = TranslateAlloyToKodkod.execute_command(
                 reporter, world.getAllReachableSigs(), command, options
             );
@@ -142,7 +173,28 @@ public class AlloyServer {
             sessionCommandIndex.put(sessionId, commandIndex);
             sessionHistory.put(sessionId, new ArrayList<>(List.of(solution)));
 
-            return buildResponse(sessionId, solution, command);
+            JsonObject response = buildResponseObject(sessionId, solution, command);
+            response.add("log", reporter.log);
+            response.add("warnings", reporter.warnings);
+
+            // Unsat core: só disponível com um solver que produz provas (ex.: minisat.prover)
+            if (!solution.satisfiable()) {
+                response.addProperty("coreSupported", options.solver.prover());
+                Pair<Set<Pos>, Set<Pos>> core = solution.highLevelCore();
+                if (!core.a.isEmpty() || !core.b.isEmpty()) {
+                    JsonObject coreJson = new JsonObject();
+                    coreJson.add("core", posArray(core.a));        // fórmulas do core
+                    coreJson.add("subCore", posArray(core.b));     // corpos das funções envolvidas
+                    response.add("unsatCore", coreJson);
+                }
+            }
+
+            // Record the Kodkod input/output: o problema Kodkod em Java, como o Analyzer o grava
+            if (options.recordKodkod) {
+                response.addProperty("kodkod", solution.debugExtractKInput());
+            }
+
+            return gson.toJson(response);
 
         } catch (Err e) {
             return error(e.getMessage());
@@ -405,6 +457,10 @@ public class AlloyServer {
     }
 
     private static String buildResponse(String sessionId, A4Solution solution, Command command) {
+        return gson.toJson(buildResponseObject(sessionId, solution, command));
+    }
+
+    private static JsonObject buildResponseObject(String sessionId, A4Solution solution, Command command) {
         JsonObject response = new JsonObject();
         boolean sat = solution.satisfiable();
         response.addProperty("sessionId", sessionId);
@@ -435,14 +491,114 @@ public class AlloyServer {
             response.addProperty("instance", solution.toString());
         }
 
-        return gson.toJson(response);
+        return response;
+    }
+
+    // --- Opções, posições e message log ---
+
+    private static boolean optBoolean(JsonObject req, String key, boolean def) {
+        return req.has(key) && !req.get(key).isJsonNull() ? req.get(key).getAsBoolean() : def;
+    }
+
+    // Posição no ficheiro (linhas e colunas a partir de 1, fim inclusivo, como na classe Pos)
+    private static JsonObject posJson(Pos p) {
+        JsonObject o = new JsonObject();
+        o.addProperty("file", p.filename);
+        o.addProperty("line", p.y);
+        o.addProperty("col", p.x);
+        o.addProperty("endLine", p.y2);
+        o.addProperty("endCol", p.x2);
+        return o;
+    }
+
+    private static JsonArray posArray(Set<Pos> positions) {
+        JsonArray arr = new JsonArray();
+        for (Pos p : positions) arr.add(posJson(p));
+        return arr;
+    }
+
+    // Recolhe o que o Analyzer mostra no message log (scopes, solver, tamanho do problema,
+    // tempos, resultado) e os warnings, que a API só comunica através do A4Reporter
+    private static class SessionReporter extends A4Reporter {
+        final JsonArray log = new JsonArray();
+        final JsonArray warnings = new JsonArray();
+        private long startTime = System.currentTimeMillis();
+
+        @Override
+        public void warning(ErrorWarning msg) {
+            JsonObject w = posJson(msg.pos);
+            w.addProperty("message", msg.msg.trim());
+            warnings.add(w);
+            log.add("Warning: " + msg.msg.trim() + " (line " + msg.pos.y + ", column " + msg.pos.x + ")");
+        }
+
+        @Override
+        public void scope(String msg) {
+            log.add(msg.trim());
+        }
+
+        @Override
+        public void bound(String msg) {
+            log.add(msg.trim());
+        }
+
+        @Override
+        public void translate(String solver, int bitwidth, int maxseq, int mintrace, int maxtrace,
+                              int skolemDepth, int symmetry, String strat) {
+            startTime = System.currentTimeMillis();
+            log.add("Solver=" + solver + (maxtrace < 1 ? "" : " Steps=" + mintrace + ".." + maxtrace)
+                + " Bitwidth=" + bitwidth + " MaxSeq=" + maxseq
+                + (skolemDepth == 0 ? "" : " SkolemDepth=" + skolemDepth)
+                + " Symmetry=" + (symmetry > 0 ? String.valueOf(symmetry) : "OFF") + " Mode=" + strat);
+        }
+
+        @Override
+        public void solve(int plength, int primaryVars, int totalVars, int clauses) {
+            log.add(totalVars + " vars. " + primaryVars + " primary vars. " + clauses + " clauses. "
+                + (System.currentTimeMillis() - startTime) + "ms.");
+        }
+
+        @Override
+        public void minimizing(Object command, int before) {
+            log.add("Minimizing the unsat core of " + before + " entries...");
+        }
+
+        @Override
+        public void minimized(Object command, int before, int after) {
+            log.add("The unsat core was minimized from " + before + " to " + after + " entries.");
+        }
+
+        @Override
+        public void resultSAT(Object command, long solvingTime, Object solution) {
+            result(command, solvingTime, true);
+        }
+
+        @Override
+        public void resultUNSAT(Object command, long solvingTime, Object solution) {
+            result(command, solvingTime, false);
+        }
+
+        // Mesmas mensagens que o Analyzer, incluindo a comparação com o 'expect'
+        private void result(Object command, long solvingTime, boolean sat) {
+            if (!(command instanceof Command)) return;
+            Command cmd = (Command) command;
+            String outcome = cmd.check
+                ? (sat ? "Counterexample found. Assertion is invalid." : "No counterexample found. Assertion may be valid.")
+                : (sat ? "Instance found. Predicate is consistent." : "No instance found. Predicate may be inconsistent.");
+            String expectation = "";
+            if (cmd.expects == 0 || cmd.expects == 1) {
+                expectation = (cmd.expects == 1) == sat ? " As expected." : " Contrary to expectation.";
+            }
+            log.add(outcome + " " + solvingTime + "ms." + expectation);
+        }
     }
 
     // Metamodelo: assinaturas como nós, extends/in e fields como arestas (como o Show Metamodel do Analyzer)
     private static String handleMetamodel(JsonObject req) {
         try {
             String filePath = req.get("file").getAsString();
-            Module world = CompUtil.parseEverything_fromFile(new A4Reporter(), null, filePath);
+            int resolutionMode = optBoolean(req, "implicitThis", false) ? 2 : 1;
+            Module world = CompUtil.parseEverything_fromFile(new A4Reporter(), null, filePath, resolutionMode);
 
             Map<String, JsonObject> nodes = new LinkedHashMap<>();
             JsonArray links = new JsonArray();

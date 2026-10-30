@@ -6,15 +6,23 @@
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onLanguage:alloy"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:alloy"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
         "id": "alloy",
-        "extensions": [".als"],
-        "aliases": ["Alloy"],
+        "extensions": [
+          ".als"
+        ],
+        "aliases": [
+          "Alloy"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -67,6 +75,73 @@
           "type": "number",
           "default": 0,
           "description": "Maximum time, in seconds, to wait for an analysis (0 = no limit). When exceeded, the analysis is terminated and the Alloy Analysis Server restarted."
+        },
+        "alloy.decomposeMode": {
+          "type": "number",
+          "default": 0,
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "enumDescriptions": [
+            "batch: regular amalgamated strategy",
+            "hybrid: competitive parallel vs. amalgamated",
+            "parallel: purely parallel decomposed strategy"
+          ],
+          "description": "Decompose strategy (as in the Alloy Analyzer's Options menu)."
+        },
+        "alloy.inferPartialInstance": {
+          "type": "boolean",
+          "default": false,
+          "description": "Infer partial instance (as in the Alloy Analyzer's Options menu; off by default, as in the Analyzer)."
+        },
+        "alloy.implicitThis": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable 'implicit this' name resolution (as in the Alloy Analyzer's Options menu)."
+        },
+        "alloy.allowWarnings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Execute commands even if the model has warnings. When disabled, as in the Alloy Analyzer, commands are not executed while there are warnings."
+        },
+        "alloy.recordKodkod": {
+          "type": "boolean",
+          "default": false,
+          "description": "Record the Kodkod input of each analysis, which can then be opened with 'Alloy: Show Kodkod Input'."
+        },
+        "alloy.coreMinimization": {
+          "type": "number",
+          "default": 2,
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "enumDescriptions": [
+            "Slow (guarantees local minimum)",
+            "Medium",
+            "Fast (initial unsat core)"
+          ],
+          "description": "Unsat core minimization. The unsat core is only available with the minisat.prover solver."
+        },
+        "alloy.coreGranularity": {
+          "type": "number",
+          "default": 0,
+          "enum": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "enumDescriptions": [
+            "Top-level conjuncts only",
+            "Flatten the formula once at the beginning",
+            "Flatten the formula at the beginning and after skolemizing",
+            "In addition to flattening the formula twice, expand the quantifiers"
+          ],
+          "description": "Unsat core granularity. The unsat core is only available with the minisat.prover solver."
         }
       }
     },
@@ -127,9 +202,21 @@
         "command": "alloy.configure",
         "title": "Alloy: Configure Analysis Options"
       },
-      { 
-        "command": "alloy.showMetamodel", 
-        "title": "Alloy: Show Metamodel" 
+      {
+        "command": "alloy.showMetamodel",
+        "title": "Alloy: Show Metamodel"
+      },
+      {
+        "command": "alloy.restartServer",
+        "title": "Alloy: Restart Analysis Server"
+      },
+      {
+        "command": "alloy.showKodkod",
+        "title": "Alloy: Show Kodkod Input"
+      },
+      {
+        "command": "alloy.clearUnsatCore",
+        "title": "Alloy: Clear Unsat Core Highlighting"
       }
     ],
     "menus": {
@@ -185,10 +272,16 @@
       {
         "type": "alloy",
         "label": "Alloy Debug",
-        "languages": ["alloy"],
+        "languages": [
+          "alloy"
+        ],
         "configurationAttributes": {
           "launch": {
-            "required": ["file", "commandIndex", "commandLabel"],
+            "required": [
+              "file",
+              "commandIndex",
+              "commandLabel"
+            ],
             "properties": {
               "file": {
                 "type": "string",
@@ -229,8 +322,49 @@
               },
               "decomposeMode": {
                 "type": "number",
-                "description": "Decomposition mode (default: 0)",
+                "description": "Decompose strategy: 0 = batch, 1 = hybrid, 2 = parallel (default: 0)",
                 "default": 0
+              },
+              "inferPartialInstance": {
+                "type": "boolean",
+                "default": false,
+                "description": "Infer partial instance (as in the Alloy Analyzer's Options menu; off by default, as in the Analyzer)."
+              },
+              "implicitThis": {
+                "type": "boolean",
+                "default": false,
+                "description": "Enable 'implicit this' name resolution (as in the Alloy Analyzer's Options menu)."
+              },
+              "allowWarnings": {
+                "type": "boolean",
+                "default": false,
+                "description": "Execute commands even if the model has warnings. When disabled, as in the Alloy Analyzer, commands are not executed while there are warnings."
+              },
+              "recordKodkod": {
+                "type": "boolean",
+                "default": false,
+                "description": "Record the Kodkod input of each analysis, which can then be opened with 'Alloy: Show Kodkod Input'."
+              },
+              "coreMinimization": {
+                "type": "number",
+                "default": 2,
+                "enum": [
+                  0,
+                  1,
+                  2
+                ],
+                "description": "Unsat core minimization. The unsat core is only available with the minisat.prover solver."
+              },
+              "coreGranularity": {
+                "type": "number",
+                "default": 0,
+                "enum": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "description": "Unsat core granularity. The unsat core is only available with the minisat.prover solver."
               }
             }
           }

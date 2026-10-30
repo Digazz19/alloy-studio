@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { getAnalysisOptions, reportAnalysis, formatWarnings } from './alloyAnalysis';
 
 export function createAlloyTestController(
   context: vscode.ExtensionContext,
@@ -95,7 +96,6 @@ export function createAlloyTestController(
     token: vscode.CancellationToken
   ) {
     const run = controller.createTestRun(request);
-    const alloyConfig = vscode.workspace.getConfiguration('alloy');
 
     const testsToRun: vscode.TestItem[] = [];
 
@@ -134,19 +134,18 @@ export function createAlloyTestController(
           action: 'execute',
           file: filePath,
           commandIndex,
-          solver: alloyConfig.get('solver', 'sat4j'),
-          symmetry: alloyConfig.get('symmetry', 20),
-          skolemDepth: alloyConfig.get('skolemDepth', 0),
-          noOverflow: alloyConfig.get('noOverflow', false),
-          unrolls: alloyConfig.get('unrolls', -1),
-          decomposeMode: 0
+          ...getAnalysisOptions()
         }, token);   // cancelar no Testing panel interrompe a análise em curso
         const duration = Date.now() - start;
+        reportAnalysis(testItem.label, response);
 
         if (response.error) {
-          run.failed(testItem, new vscode.TestMessage(response.error), duration);
+          const message = response.warnings?.length
+            ? `${response.error}\n\n${formatWarnings(response)}`
+            : response.error;
+          run.failed(testItem, new vscode.TestMessage(message), duration);
           run.appendOutput(`❌ ${testItem.label}\r\n`);
-          run.appendOutput(`Error: ${response.error}\r\n\r\n`);
+          run.appendOutput(`Error: ${message.replace(/\n/g, '\r\n')}\r\n\r\n`);
           continue;
         }
 

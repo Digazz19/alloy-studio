@@ -18,6 +18,15 @@ import {
   restartAlloyServer,
   AnalysisAbortedError
 } from './alloyServer';
+import {
+  getAnalysisOptions,
+  reportAnalysis,
+  formatWarnings,
+  showUnsatCore,
+  clearUnsatCore,
+  storeKodkod,
+  registerAnalysisFeatures
+} from './alloyAnalysis';
 
 let client: LanguageClient;
 
@@ -329,21 +338,23 @@ export function activate(context: vscode.ExtensionContext) {
       panel.webview.html = getLoadingHtml();
 
       try {
-        const alloyConfig = vscode.workspace.getConfiguration('alloy');
+        clearUnsatCore();
         const response = await sendWithProgress(`Alloy: ${commandLabel}`, {
           action: 'execute',
           file: targetFile,
           commandIndex: selectedIndex,
-          solver: alloyConfig.get('solver', 'sat4j'),
-          symmetry: alloyConfig.get('symmetry', 20),
-          skolemDepth: alloyConfig.get('skolemDepth', 0),
-          noOverflow: alloyConfig.get('noOverflow', false),
-          unrolls: alloyConfig.get('unrolls', -1),
-          decomposeMode: 0
+          ...getAnalysisOptions()
         });
 
+        // Message log, unsat core e Kodkod (como no Analyzer)
+        reportAnalysis(commandLabel, response, true);
+        storeKodkod(commandLabel, response);
+        showUnsatCore(response);
+
         if (response.error) {
-          panel.webview.html = getErrorHtml(response.error);
+          panel.webview.html = getErrorHtml(
+            response.warnings?.length ? `${response.error}\n\n${formatWarnings(response)}` : response.error
+          );
           return;
         }
 
@@ -420,6 +431,7 @@ export function activate(context: vscode.ExtensionContext) {
     panel.webview.html = getLoadingHtml();
 
     const results: { label: string; response: any; index: number }[] = [];
+    clearUnsatCore();
 
     // Uma única notificação para todos os comandos, mostrada só se o Run All demorar mais
     // de 1 s (para não piscar); Cancel interrompe o comando em curso (reiniciando o
@@ -448,18 +460,14 @@ export function activate(context: vscode.ExtensionContext) {
         currentMessage = `${i + 1}/${commands.length}: ${commands[i]}`;
         report?.(currentMessage);
         try {
-          const alloyConfig = vscode.workspace.getConfiguration('alloy');
           const response = await sendToServer({
             action: 'execute',
             file: filePath,
             commandIndex: i,
-            solver: alloyConfig.get('solver', 'sat4j'),
-            symmetry: alloyConfig.get('symmetry', 20),
-            skolemDepth: alloyConfig.get('skolemDepth', 0),
-            noOverflow: alloyConfig.get('noOverflow', false),
-            unrolls: alloyConfig.get('unrolls', -1),
-            decomposeMode: 0
+            ...getAnalysisOptions()
           }, token);
+          reportAnalysis(commands[i], response, i === 0);
+          storeKodkod(commands[i], response);
           results.push({ label: commands[i], response, index: i });
         } catch (err: any) {
           results.push({
@@ -526,7 +534,12 @@ export function activate(context: vscode.ExtensionContext) {
       await config.update('noOverflow', noOverflow === 'true', vscode.ConfigurationTarget.Global);
       await config.update('unrolls', Number(unrolls), vscode.ConfigurationTarget.Global);
 
-      vscode.window.showInformationMessage(`Alloy options saved: solver=${solver}, symmetry=${symmetry}`);
+      // As restantes opções do menu Options do Analyzer estão nas settings (alloy.*)
+      const choice = await vscode.window.showInformationMessage(
+        `Alloy options saved: solver=${solver}, symmetry=${symmetry}`,
+        'All options…'
+      );
+      if (choice) vscode.commands.executeCommand('workbench.action.openSettings', 'alloy.');
     })
   );
 
@@ -553,7 +566,8 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const response = await sendWithProgress(`Alloy Metamodel: ${fileName}`, {
           action: 'metamodel',
-          file: editor.document.uri.fsPath
+          file: editor.document.uri.fsPath,
+          implicitThis: getAnalysisOptions().implicitThis
         });
         if (response.error) {
           panel.webview.html = getErrorHtml(response.error);
@@ -581,6 +595,9 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('alloy.restartServer', () => restartAlloyServer())
   );
+
+  // --- Message log, unsat core e Kodkod ---
+  registerAnalysisFeatures(context);
 
   // --- Testing ---
   createAlloyTestController(context, sendToServer);

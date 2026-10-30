@@ -15,17 +15,21 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { alloyState } from './alloyState';
 import { sendToServer, sendWithProgress, AnalysisAbortedError } from './alloyServer';
+import {
+  AnalysisOptions,
+  getAnalysisOptions,
+  reportAnalysis,
+  formatWarnings,
+  showUnsatCore,
+  clearUnsatCore,
+  storeKodkod
+} from './alloyAnalysis';
 
-interface AlloyLaunchArgs extends DebugProtocol.LaunchRequestArguments {
+// Os argumentos do launch.json podem redefinir qualquer opção de análise das settings
+interface AlloyLaunchArgs extends DebugProtocol.LaunchRequestArguments, Partial<AnalysisOptions> {
   file: string;
   commandIndex: number;
   commandLabel: string;
-  solver?: string;
-  symmetry?: number;
-  skolemDepth?: number;
-  noOverflow?: boolean;
-  unrolls?: number;
-  decomposeMode?: number;
 }
 
 export class AlloyDebugSession extends LoggingDebugSession {
@@ -79,21 +83,31 @@ export class AlloyDebugSession extends LoggingDebugSession {
       return;
     }
 
+    // Opções das settings, redefinidas pelas que vierem no launch.json
+    const options: any = getAnalysisOptions();
+    for (const key of Object.keys(options)) {
+      const value = (args as any)[key];
+      if (value !== undefined && value !== null && value !== '') options[key] = value;
+    }
+
     try {
+      clearUnsatCore();
       const result = await this.sendToServer({
         action: 'execute',
         file: this.file,
         commandIndex: this.commandIndex,
-        solver: args.solver || '',
-        symmetry: Number(args.symmetry) ?? 20,
-        skolemDepth: Number(args.skolemDepth) ?? 0,
-        noOverflow: args.noOverflow === true || String(args.noOverflow) === 'true',
-        unrolls: Number(args.unrolls) ?? -1,
-        decomposeMode: args.decomposeMode ?? 0
+        ...options
       });
 
+      // Message log, unsat core e Kodkod (como no Analyzer)
+      reportAnalysis(this.commandLabel, result, true);
+      storeKodkod(this.commandLabel, result);
+      showUnsatCore(result);
+
       if (result.error) {
-        this.sendErrorResponse(response, 1, result.error);
+        this.sendErrorResponse(response, 1, result.warnings?.length
+          ? `${result.error}\n\n${formatWarnings(result)}`
+          : result.error);
         return;
       }
 
