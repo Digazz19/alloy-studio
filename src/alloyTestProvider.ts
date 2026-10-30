@@ -3,7 +3,7 @@ import * as path from 'path';
 
 export function createAlloyTestController(
   context: vscode.ExtensionContext,
-  sendToServer: (request: object) => Promise<any>
+  sendToServer: (request: object, token?: vscode.CancellationToken) => Promise<any>
 ): vscode.TestController {
 
   const controller = vscode.tests.createTestController(
@@ -140,7 +140,7 @@ export function createAlloyTestController(
           noOverflow: alloyConfig.get('noOverflow', false),
           unrolls: alloyConfig.get('unrolls', -1),
           decomposeMode: 0
-        });
+        }, token);   // cancelar no Testing panel interrompe a análise em curso
         const duration = Date.now() - start;
 
         if (response.error) {

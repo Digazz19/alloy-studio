@@ -10,91 +10,16 @@ import {
 import { AlloyDebugSession } from './alloyDebugAdapter';
 import { alloyState } from './alloyState';
 import { createAlloyTestController } from './alloyTestProvider';
+import {
+  sendToServer,
+  sendWithProgress,
+  startAlloyServer,
+  stopAlloyServer,
+  restartAlloyServer,
+  AnalysisAbortedError
+} from './alloyServer';
 
 let client: LanguageClient;
-let alloyServerProcess: cp.ChildProcess | undefined;
-const ALLOY_SERVER_PORT = 5050;
-
-// Enviar pedido ao servidor Java
-function sendToServer(request: object, retries: number = 5, delay: number = 1000): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const attempt = (remainingRetries: number) => {
-      const socket = new net.Socket();
-      let data = '';
-
-      socket.connect(ALLOY_SERVER_PORT, '127.0.0.1', () => {
-        socket.write(JSON.stringify(request) + '\n');
-      });
-
-      socket.on('data', (chunk) => {
-        data += chunk.toString();
-        try {
-          const response = JSON.parse(data);
-          socket.destroy();
-          resolve(response);
-        } catch {
-          // ainda a receber dados
-        }
-      });
-
-      socket.on('error', (err) => {
-        socket.destroy();
-        if (remainingRetries > 0) {
-          setTimeout(() => attempt(remainingRetries - 1), delay);
-        } else {
-          reject(err);
-        }
-      });
-
-      socket.setTimeout(30000, () => {
-        socket.destroy();
-        reject(new Error('Timeout'));
-      });
-    };
-
-    attempt(retries);
-  });
-}
-
-// Arrancar o servidor Java
-function startAlloyServer(context: vscode.ExtensionContext) {
-  const serverJarPath = vscode.workspace
-    .getConfiguration('alloy')
-    .get<string>('serverJarPath', '');
-
-  if (!serverJarPath || !fs.existsSync(serverJarPath)) {
-    vscode.window.showWarningMessage(
-      'Alloy Server JAR not configured — instance navigation will not be available.'
-    );
-    return;
-  }
-
-  alloyServerProcess = cp.spawn(
-    'java',
-    ['-jar', serverJarPath, String(ALLOY_SERVER_PORT)],
-    { stdio: 'pipe' }
-  );
-
-  alloyServerProcess.stdout?.on('data', (data) => {
-    console.log('Alloy Server:', data.toString());
-  });
-
-  alloyServerProcess.stderr?.on('data', (data) => {
-    console.error('Alloy Server error:', data.toString());
-  });
-
-  alloyServerProcess.on('error', (err) => {
-    vscode.window.showErrorMessage('Error starting Alloy Server: ' + err.message);
-  });
-
-  context.subscriptions.push({
-    dispose: () => {
-      alloyServerProcess?.kill();
-    }
-  });
-
-  vscode.window.showInformationMessage('Alloy Analysis Server initialized.');
-}
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -124,7 +49,7 @@ export function activate(context: vscode.ExtensionContext) {
             });
           } else {
             try {
-              const response = await sendToServer({
+              const response = await sendWithProgress(`Alloy: ${instance.commandLabel}`, {
                 action: message.command,
                 sessionId: message.sessionId,
                 stateIndex: message.stateIndex ?? 0
@@ -151,7 +76,10 @@ export function activate(context: vscode.ExtensionContext) {
                 subsetSigs: response.subsetSigs ?? []
               });
             } catch (err: any) {
-              vscode.window.showErrorMessage('Error: ' + err.message);
+              // Se foi cancelado, o aviso do reinício do servidor já foi mostrado
+              if (!(err instanceof AnalysisAbortedError)) {
+                vscode.window.showErrorMessage('Error: ' + err.message);
+              }
             }
           }
         } else if (message.command === 'showState') {
@@ -402,7 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const alloyConfig = vscode.workspace.getConfiguration('alloy');
-        const response = await sendToServer({
+        const response = await sendWithProgress(`Alloy: ${commandLabel}`, {
           action: 'execute',
           file: targetFile,
           commandIndex: selectedIndex,
@@ -426,7 +354,7 @@ export function activate(context: vscode.ExtensionContext) {
           const validActions = ['next', 'previous', 'newConfig', 'newTrace', 'newInit', 'newFork'];
           if (validActions.includes(message.command)) {
             try {
-              const newResponse = await sendToServer({
+              const newResponse = await sendWithProgress(`Alloy: ${commandLabel}`, {
                 action: message.command,
                 sessionId: message.sessionId,
                 stateIndex: message.stateIndex ?? 0
@@ -438,7 +366,10 @@ export function activate(context: vscode.ExtensionContext) {
               lastResponse = newResponse;
               panel.webview.html = getResultsHtml(lastResponse, commandLabel);
             } catch (err: any) {
-              vscode.window.showErrorMessage('Error: ' + err.message);
+              // Se foi cancelado, o aviso do reinício do servidor já foi mostrado
+              if (!(err instanceof AnalysisAbortedError)) {
+                vscode.window.showErrorMessage('Error: ' + err.message);
+              }
             }
           } else if (message.command === 'showState') {
             panel.webview.html = getResultsHtml(lastResponse, commandLabel, message.stateIndex);
@@ -446,9 +377,9 @@ export function activate(context: vscode.ExtensionContext) {
         });
 
       } catch (err: any) {
-        panel.webview.html = getErrorHtml(
-          'Error communicating with the Alloy Server.\n' + err.message
-        );
+        panel.webview.html = err instanceof AnalysisAbortedError
+          ? getCancelledHtml(err.message)
+          : getErrorHtml('Error communicating with the Alloy Server.\n' + err.message);
       }
     }
   );
@@ -490,28 +421,65 @@ export function activate(context: vscode.ExtensionContext) {
 
     const results: { label: string; response: any; index: number }[] = [];
 
-    for (let i = 0; i < commands.length; i++) {
-      try {
-        const alloyConfig = vscode.workspace.getConfiguration('alloy');
-        const response = await sendToServer({
-          action: 'execute',
-          file: filePath,
-          commandIndex: i,
-          solver: alloyConfig.get('solver', 'sat4j'),
-          symmetry: alloyConfig.get('symmetry', 20),
-          skolemDepth: alloyConfig.get('skolemDepth', 0),
-          noOverflow: alloyConfig.get('noOverflow', false),
-          unrolls: alloyConfig.get('unrolls', -1),
-          decomposeMode: 0
-        });
-        results.push({ label: commands[i], response, index: i });
-      } catch (err: any) {
-        results.push({
-          label: commands[i],
-          response: { error: err.message },
-          index: i
-        });
+    // Uma única notificação para todos os comandos, mostrada só se o Run All demorar mais
+    // de 1 s (para não piscar); Cancel interrompe o comando em curso (reiniciando o
+    // servidor) e não executa os seguintes
+    const source = new vscode.CancellationTokenSource();
+    const token = source.token;
+    let currentMessage = '';
+    let report: ((message: string) => void) | undefined;
+    let finishRunAll: () => void = () => { };
+    const runAllDone = new Promise<void>(resolve => { finishRunAll = resolve; });
+    const progressTimer = setTimeout(() => {
+      vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Alloy: Run All', cancellable: true },
+        (progress, progressToken) => {
+          progressToken.onCancellationRequested(() => source.cancel());
+          report = (message) => progress.report({ message });
+          report(currentMessage);
+          return runAllDone;
+        }
+      );
+    }, 1000);
+
+    try {
+      for (let i = 0; i < commands.length; i++) {
+        if (token.isCancellationRequested) break;
+        currentMessage = `${i + 1}/${commands.length}: ${commands[i]}`;
+        report?.(currentMessage);
+        try {
+          const alloyConfig = vscode.workspace.getConfiguration('alloy');
+          const response = await sendToServer({
+            action: 'execute',
+            file: filePath,
+            commandIndex: i,
+            solver: alloyConfig.get('solver', 'sat4j'),
+            symmetry: alloyConfig.get('symmetry', 20),
+            skolemDepth: alloyConfig.get('skolemDepth', 0),
+            noOverflow: alloyConfig.get('noOverflow', false),
+            unrolls: alloyConfig.get('unrolls', -1),
+            decomposeMode: 0
+          }, token);
+          results.push({ label: commands[i], response, index: i });
+        } catch (err: any) {
+          results.push({
+            label: commands[i],
+            // Interrompido (Cancel ou tempo limite) não é um erro do modelo
+            response: err instanceof AnalysisAbortedError
+              ? { stopped: true, message: err.message }
+              : { error: err.message },
+            index: i
+          });
+        }
       }
+      // Comandos que ficaram por correr depois de um Cancel
+      for (let i = results.length; i < commands.length; i++) {
+        results.push({ label: commands[i], response: { notRun: true }, index: i });
+      }
+    } finally {
+      clearTimeout(progressTimer);
+      finishRunAll();
+      source.dispose();
     }
 
     panel.webview.html = getSummaryHtml(results);
@@ -583,7 +551,7 @@ export function activate(context: vscode.ExtensionContext) {
       panel.webview.html = getLoadingHtml();
 
       try {
-        const response = await sendToServer({
+        const response = await sendWithProgress(`Alloy Metamodel: ${fileName}`, {
           action: 'metamodel',
           file: editor.document.uri.fsPath
         });
@@ -601,11 +569,17 @@ export function activate(context: vscode.ExtensionContext) {
           groupColors
         });
       } catch (err: any) {
-        panel.webview.html = getErrorHtml(
-          'Error communicating with the Alloy Server.\n' + err.message
-        );
+        panel.webview.html = err instanceof AnalysisAbortedError
+          ? getCancelledHtml(err.message)
+          : getErrorHtml('Error communicating with the Alloy Server.\n' + err.message);
       }
     })
+  );
+
+  // --- Restart Analysis Server ---
+  // Também permite ao utilizador terminar à força uma análise que não termina
+  context.subscriptions.push(
+    vscode.commands.registerCommand('alloy.restartServer', () => restartAlloyServer())
   );
 
   // --- Testing ---
@@ -616,8 +590,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Arrancar o servidor Java
   setTimeout(() => {
-    startAlloyServer(context);
+    startAlloyServer();
   }, 2000);
+  context.subscriptions.push({ dispose: () => { void stopAlloyServer(); } });
 }
 
 function startLspServer(context: vscode.ExtensionContext) {
@@ -685,7 +660,7 @@ function startLspServer(context: vscode.ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
-  alloyServerProcess?.kill();
+  void stopAlloyServer();
   if (!client) return undefined;
   return client.stop();
 }
@@ -738,6 +713,27 @@ function getErrorHtml(message: string): string {
   <body>
     <h2>❌ Error</h2>
     <pre>${escapeHtml(message)}</pre>
+  </body>
+  </html>`;
+}
+
+function getCancelledHtml(message: string): string {
+  return `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <style>
+      body {
+        font-family: var(--vscode-font-family);
+        padding: 20px;
+        color: var(--vscode-foreground);
+        background-color: var(--vscode-editor-background);
+      }
+    </style>
+  </head>
+  <body>
+    <h2>⏹ Analysis stopped</h2>
+    <p>${escapeHtml(message)}</p>
   </body>
   </html>`;
 }
@@ -1201,6 +1197,19 @@ class AlloyDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
 
 function getSummaryHtml(results: { label: string; response: any; index: number }[]): string {
   const rows = results.map(r => {
+    // Comando interrompido (Cancel ou tempo limite) ou que ficou por correr
+    if (r.response.stopped || r.response.notRun) {
+      const stopped = !!r.response.stopped;
+      return `
+      <tr>
+        <td>${stopped ? '⏹' : '⏭'}</td>
+        <td>${escapeHtml(r.label)}</td>
+        <td class="status skipped">${stopped ? 'Stopped' : 'Not run'}</td>
+        <td class="first-result">${escapeHtml(stopped ? r.response.message : 'Run All was cancelled before this command')}</td>
+      </tr>
+    `;
+    }
+
     const sat = r.response.satisfiable;
     const error = r.response.error;
     const isCheck = r.label.trim().startsWith('check');
@@ -1297,6 +1306,7 @@ function getSummaryHtml(results: { label: string; response: any; index: number }
     .status.sat { color: #4ec9b0; }
     .status.unsat { color: #f48771; }
     .status.error { color: #f48771; }
+    .status.skipped { opacity: 0.7; }
     .first-result {
       font-size: 11px;
       opacity: 0.8;

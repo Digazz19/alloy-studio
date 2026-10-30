@@ -14,9 +14,7 @@ import {
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { alloyState } from './alloyState';
-import * as net from 'net';
-
-const ALLOY_SERVER_PORT = 5050;
+import { sendToServer, sendWithProgress, AnalysisAbortedError } from './alloyServer';
 
 interface AlloyLaunchArgs extends DebugProtocol.LaunchRequestArguments {
   file: string;
@@ -38,6 +36,8 @@ export class AlloyDebugSession extends LoggingDebugSession {
   private file: string = '';
   private commandIndex: number = 0;
   private currentStateIndex: number = 0;
+  // Cancelado quando o utilizador para a sessão: interrompe uma análise que ainda esteja a correr
+  private stopSource = new vscode.CancellationTokenSource();
 
   public constructor() {
     super();
@@ -308,6 +308,11 @@ export class AlloyDebugSession extends LoggingDebugSession {
 
     } catch (err: any) {
       this.sendErrorResponse(response, 1, err.message);
+      // A análise foi interrompida e o servidor reiniciado: a sessão do servidor já não existe
+      if (err instanceof AnalysisAbortedError) {
+        alloyState.clear();
+        this.sendEvent(new TerminatedEvent());
+      }
     }
   }
 
@@ -350,10 +355,16 @@ export class AlloyDebugSession extends LoggingDebugSession {
     response: DebugProtocol.TerminateResponse,
     args: DebugProtocol.TerminateArguments
   ): Promise<void> {
-    await this.sendToServer({
-      action: 'close',
-      sessionId: this.sessionId
-    });
+    // Se ainda houver uma análise a correr (ex.: o launch ainda não respondeu), interrompê-la
+    this.stopSource.cancel();
+    try {
+      await sendToServer({
+        action: 'close',
+        sessionId: this.sessionId
+      });
+    } catch {
+      // o servidor pode estar a reiniciar; a sessão desaparece de qualquer forma
+    }
     alloyState.clear();
     this.sendResponse(response);
     this.sendEvent(new TerminatedEvent());
@@ -479,35 +490,13 @@ export class AlloyDebugSession extends LoggingDebugSession {
     }
   }
 
-  // Comunicar com o servidor Java
-  private sendToServer(request: object): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const socket = new net.Socket();
-      let data = '';
-
-      socket.connect(ALLOY_SERVER_PORT, '127.0.0.1', () => {
-        socket.write(JSON.stringify(request) + '\n');
-      });
-
-      socket.on('data', (chunk) => {
-        data += chunk.toString();
-        try {
-          const response = JSON.parse(data);
-          socket.destroy();
-          resolve(response);
-        } catch {
-          // ainda a receber dados
-        }
-      });
-
-      socket.on('error', (err) => {
-        reject(err);
-      });
-
-      socket.setTimeout(30000, () => {
-        socket.destroy();
-        reject(new Error('Timeout'));
-      });
-    });
+  // Comunicar com o servidor Java.
+  // Pedidos rápidos (evaluate, close, previous) vão diretamente; os que podem envolver o solver
+  // mostram uma notificação com Cancel, e são também interrompidos ao parar a sessão.
+  private sendToServer(request: { action: string; [key: string]: any }): Promise<any> {
+    if (request.action === 'evaluate' || request.action === 'close' || request.action === 'previous') {
+      return sendToServer(request, this.stopSource.token);
+    }
+    return sendWithProgress(`Alloy: ${this.commandLabel}`, request, this.stopSource.token);
   }
 }

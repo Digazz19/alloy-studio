@@ -62,6 +62,11 @@
           "type": "number",
           "default": -1,
           "description": "Default unrolls"
+        },
+        "alloy.timeout": {
+          "type": "number",
+          "default": 0,
+          "description": "Maximum time, in seconds, to wait for an analysis (0 = no limit). When exceeded, the analysis is terminated and the Alloy Analysis Server restarted."
         }
       }
     },
