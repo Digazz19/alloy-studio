@@ -25,7 +25,9 @@ import {
   showUnsatCore,
   clearUnsatCore,
   storeKodkod,
-  registerAnalysisFeatures
+  registerAnalysisFeatures,
+  exhaustKey,
+  noMoreInstancesMessage
 } from './alloyAnalysis';
 
 let client: LanguageClient;
@@ -36,11 +38,16 @@ export function activate(context: vscode.ExtensionContext) {
   let alloyPanel: vscode.WebviewPanel | undefined;
 
   alloyState.on('instanceChanged', (instance) => {
-    if (!alloyPanel || !alloyPanel.visible) {
+    // Botões temporais da barra do editor (package.json) só para modelos temporais
+    vscode.commands.executeCommand('setContext', 'alloy.isTemporal', !!instance.isTemporal);
+    vscode.commands.executeCommand('setContext', 'alloy.hasConfigs', !!instance.isTemporal && !!instance.hasConfigs);
+
+    // Um único painel: criado uma vez, ao lado do editor, sem lhe tirar o foco
+    if (!alloyPanel) {
       alloyPanel = vscode.window.createWebviewPanel(
         'alloyResults',
         `Alloy: ${instance.commandLabel}`,
-        vscode.ViewColumn.Beside,
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
         { enableScripts: true }
       );
 
@@ -64,7 +71,13 @@ export function activate(context: vscode.ExtensionContext) {
                 stateIndex: message.stateIndex ?? 0
               });
               if (response.noMoreInstances) {
-                vscode.window.showInformationMessage('There are no more instances available.');
+                vscode.window.showInformationMessage(noMoreInstancesMessage(message.command));
+                // Manter a instância atual, desativando o botão que se esgotou
+                const current = alloyState.getInstance() ?? instance;
+                alloyState.setInstance({
+                  ...current,
+                  exhausted: [...(current.exhausted ?? []), exhaustKey(message.command, message.stateIndex ?? 0)]
+                });
                 return;
               }
               if (response.error) {
@@ -82,7 +95,8 @@ export function activate(context: vscode.ExtensionContext) {
                 hasPrevious: response.hasPrevious || false,
                 sessionId: response.sessionId,
                 currentStateIndex: message.command === 'newFork' ? (message.stateIndex ?? 0) : 0,
-                subsetSigs: response.subsetSigs ?? []
+                subsetSigs: response.subsetSigs ?? [],
+                exhausted: []
               });
             } catch (err: any) {
               // Se foi cancelado, o aviso do reinício do servidor já foi mostrado
@@ -113,7 +127,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     alloyPanel.webview.html = getResultsHtml(instance, instance.commandLabel, instance.currentStateIndex);
-    alloyPanel.reveal(vscode.ViewColumn.Beside, false);
+    // Mostrar o painel na coluna onde já está (Beside abriria uma coluna nova a cada navegação)
+    if (!alloyPanel.visible) {
+      alloyPanel.reveal(alloyPanel.viewColumn, true);
+    }
   });
 
   alloyState.on('instanceCleared', () => {
@@ -266,21 +283,24 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Esconder a toolbar nativa quando o debug Alloy começa
+  // Esconder a toolbar nativa quando o debug Alloy começa (guardando a configuração do utilizador)
+  let previousToolBarLocation: string | undefined;
+
   vscode.debug.onDidStartDebugSession((session) => {
     if (session.type === 'alloy') {
       vscode.commands.executeCommand('setContext', 'alloyDebugActive', true);
-      vscode.workspace.getConfiguration('debug')
-        .update('toolBarLocation', 'hidden', vscode.ConfigurationTarget.Global);
+      const debugConfig = vscode.workspace.getConfiguration('debug');
+      previousToolBarLocation = debugConfig.inspect<string>('toolBarLocation')?.globalValue;
+      debugConfig.update('toolBarLocation', 'hidden', vscode.ConfigurationTarget.Global);
     }
   });
 
-  // Restaurar a toolbar quando o debug Alloy termina
+  // Restaurar a toolbar quando o debug Alloy termina (undefined repõe o valor por defeito)
   vscode.debug.onDidTerminateDebugSession((session) => {
     if (session.type === 'alloy') {
       vscode.commands.executeCommand('setContext', 'alloyDebugActive', false);
       vscode.workspace.getConfiguration('debug')
-        .update('toolBarLocation', 'floating', vscode.ConfigurationTarget.Global);
+        .update('toolBarLocation', previousToolBarLocation, vscode.ConfigurationTarget.Global);
     }
   });
 
@@ -359,6 +379,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         let lastResponse = response;
+        let lastState = 0;
         panel.webview.html = getResultsHtml(lastResponse, commandLabel);
 
         panel.webview.onDidReceiveMessage(async (message) => {
@@ -374,7 +395,18 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showErrorMessage(newResponse.error);
                 return;
               }
+              if (newResponse.noMoreInstances) {
+                // Manter a instância atual (em vez de mostrar UNSAT), desativando o botão esgotado
+                vscode.window.showInformationMessage(noMoreInstancesMessage(message.command));
+                lastResponse = {
+                  ...lastResponse,
+                  exhausted: [...(lastResponse.exhausted ?? []), exhaustKey(message.command, message.stateIndex ?? 0)]
+                };
+                panel.webview.html = getResultsHtml(lastResponse, commandLabel, lastState);
+                return;
+              }
               lastResponse = newResponse;
+              lastState = 0;
               panel.webview.html = getResultsHtml(lastResponse, commandLabel);
             } catch (err: any) {
               // Se foi cancelado, o aviso do reinício do servidor já foi mostrado
@@ -383,7 +415,8 @@ export function activate(context: vscode.ExtensionContext) {
               }
             }
           } else if (message.command === 'showState') {
-            panel.webview.html = getResultsHtml(lastResponse, commandLabel, message.stateIndex);
+            lastState = message.stateIndex ?? 0;
+            panel.webview.html = getResultsHtml(lastResponse, commandLabel, lastState);
           }
         });
 
@@ -782,6 +815,9 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
   const traceLength = response.traceLength || 1;
   const loopState = response.loopState ?? -1;
   const hasConfigs = response.hasConfigs || false;
+  // Navegações que já não encontraram soluções a partir desta instância
+  const exhausted: string[] = response.exhausted || [];
+  const off = (key: string) => exhausted.includes(key);
 
   if (!satisfiable) {
     return `<!DOCTYPE html>
@@ -895,11 +931,11 @@ function getResultsHtml(response: any, commandLabel: string, currentState: numbe
     <div id="legend"></div>
     <div id="nav-buttons" ${graph ? 'style="display:none"' : ''}>
       <button id="btn-previous" ${hasPrevious ? '' : 'disabled'} title="Previous instance">◀ Previous</button>
-      <button id="btn-next" ${hasNext ? '' : 'disabled'} title="Next instance">Next ▶</button>
-      <button id="btn-newTrace" ${hasNext ? '' : 'disabled'} title="New trace">New Trace</button>
-      <button id="btn-newInit" ${hasNext ? '' : 'disabled'} title="New initial state">New Init</button>
-      <button id="btn-newConfig" ${hasConfigs ? '' : 'disabled'} title="New configuration">New Config</button>
-      <button id="btn-newFork" ${isTemporal ? '' : 'disabled'} title="New Fork">New Fork</button>
+      <button id="btn-next" ${hasNext && !off('next') ? '' : 'disabled'} title="Next instance">Next ▶</button>
+      <button id="btn-newTrace" ${isTemporal && hasNext && !off('newTrace') ? '' : 'disabled'} title="New trace">New Trace</button>
+      <button id="btn-newInit" ${isTemporal && hasNext && !off('newInit') ? '' : 'disabled'} title="New initial state">New Init</button>
+      <button id="btn-newConfig" ${isTemporal && hasConfigs && !off('newConfig') ? '' : 'disabled'} title="New configuration">New Config</button>
+      <button id="btn-newFork" ${isTemporal && !off('newFork:' + currentState) ? '' : 'disabled'} title="New Fork">New Fork</button>
     </div>
   </div>
   ${stateNav}

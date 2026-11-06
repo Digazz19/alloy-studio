@@ -22,7 +22,9 @@ import {
   formatWarnings,
   showUnsatCore,
   clearUnsatCore,
-  storeKodkod
+  storeKodkod,
+  exhaustKey,
+  noMoreInstancesMessage
 } from './alloyAnalysis';
 
 // Os argumentos do launch.json podem redefinir qualquer opção de análise das settings
@@ -282,12 +284,20 @@ export class AlloyDebugSession extends LoggingDebugSession {
       }
 
       if (result.noMoreInstances || result.noPreviousInstance) {
-        this.sendEvent(new OutputEvent(
-          result.noMoreInstances 
-            ? 'No more instances available.\n' 
-            : 'No previous instance available.\n',
-          'console'
-        ));
+        const text = result.noMoreInstances
+          ? noMoreInstancesMessage(action)
+          : 'There is no previous instance.';
+        // Mensagem visível (como no Analyzer) e também na Debug Console
+        vscode.window.showInformationMessage(text);
+        this.sendEvent(new OutputEvent(text + '\n', 'console'));
+        // Manter a instância atual, desativando no grafo o botão que se esgotou
+        const current = alloyState.getInstance();
+        if (result.noMoreInstances && current) {
+          alloyState.setInstance({
+            ...current,
+            exhausted: [...(current.exhausted ?? []), exhaustKey(action, this.currentStateIndex)]
+          });
+        }
         this.sendResponse(response);
         this.sendEvent(new StoppedEvent('step', 1));
         return;
@@ -353,7 +363,9 @@ export class AlloyDebugSession extends LoggingDebugSession {
         satisfiable: this.currentInstance.satisfiable,
         commandLabel: this.commandLabel,
         currentStateIndex: this.currentStateIndex,
-        subsetSigs: this.currentInstance.subsetSigs ?? []
+        subsetSigs: this.currentInstance.subsetSigs ?? [],
+        // Mudar de estado não muda a instância: manter as navegações já esgotadas
+        exhausted: alloyState.getInstance()?.exhausted ?? []
       });
       this.sendResponse(response);
       // Emitir stopped com o frame correto

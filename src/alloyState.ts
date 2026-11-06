@@ -13,6 +13,8 @@ export interface AlloyInstance {
   commandLabel: string;
   currentStateIndex: number;
   subsetSigs?: string[];
+  // Navegações que já não encontraram nenhuma solução a partir desta instância (ver exhaustKey)
+  exhausted?: string[];
 }
 
 class AlloyStateManager extends EventEmitter {

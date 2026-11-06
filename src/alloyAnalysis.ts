@@ -43,6 +43,26 @@ export function getAnalysisOptions(): AnalysisOptions {
   };
 }
 
+// --- Fim das instâncias ---
+
+// Como no Analyzer, só se sabe que não há mais soluções depois de as pedir ao solver:
+// o botão fica ativo até lá, e depois é desativado e é mostrada uma mensagem.
+
+// Chave da navegação esgotada; o New Fork depende do estado a partir do qual se bifurca
+export function exhaustKey(action: string, stateIndex: number = 0): string {
+  return action === 'newFork' ? `newFork:${stateIndex}` : action;
+}
+
+export function noMoreInstancesMessage(action: string): string {
+  switch (action) {
+    case 'newTrace': return 'There are no more traces for this configuration.';
+    case 'newInit': return 'There are no more traces with a different initial state.';
+    case 'newConfig': return 'There are no more configurations.';
+    case 'newFork': return 'There are no more traces that branch from this state.';
+    default: return 'There are no more satisfying instances.';
+  }
+}
+
 // --- Message log ---
 
 let output: vscode.OutputChannel | undefined;

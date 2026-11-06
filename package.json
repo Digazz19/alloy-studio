@@ -233,37 +233,37 @@
         },
         {
           "command": "alloy.debug.previous",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy",
           "group": "navigation@1"
         },
         {
           "command": "alloy.debug.next",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy",
           "group": "navigation@2"
         },
         {
           "command": "alloy.debug.newFork",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy && alloy.isTemporal",
           "group": "navigation@3"
         },
         {
           "command": "alloy.debug.newTrace",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy && alloy.isTemporal",
           "group": "navigation@4"
         },
         {
           "command": "alloy.debug.newInit",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy && alloy.isTemporal",
           "group": "navigation@5"
         },
         {
           "command": "alloy.debug.newConfig",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy && alloy.hasConfigs",
           "group": "navigation@6"
         },
         {
           "command": "alloy.debug.stop",
-          "when": "alloyDebugActive",
+          "when": "alloyDebugActive && resourceLangId == alloy",
           "group": "navigation@7"
         }
       ]
